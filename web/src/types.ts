@@ -25,7 +25,7 @@ export interface ConversionEvent {
   id: number;
   eventId: string;
   leadId: number;
-  status: "pending" | "sent" | "failed";
+  status: "pending" | "in_process" | "sent" | "failed";
   attempts: number;
   requestBody: string;
   responseStatus: number | null;
@@ -33,6 +33,7 @@ export interface ConversionEvent {
   lastError: string | null;
   lastAttemptAt: string | null;
   nextRetryAt: string | null;
+  processingStartedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }

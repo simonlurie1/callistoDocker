@@ -14,6 +14,7 @@ lead created → status changed to converted → outbound conversion request
 | `db` | Leads + outbound conversion events | MySQL 8.4 |
 | `api` | REST API, business rules, tracker integration, retry command | Node.js 20, TypeScript, Express, Prisma |
 | `web` | UI, plus a same-origin reverse proxy to the API | React 18 + Vite, served by nginx |
+| `worker` | Periodic batch service: scans, claims, and posts pending conversions to the tracker | Node.js 20 (same image as `api`) |
 | `mock-tracker` *(optional, `mock` profile)* | Local stand-in for the tracker, for testing retries | Express |
 
 ```
@@ -88,49 +89,66 @@ All responses are JSON. Errors look like `{"error": "...", "errors": {field: [me
 ## Outbound conversion design
 
 The assignment rules out calling the tracker from the controller as
-fire-and-forget. This is how the app handles it instead
-(`api/src/services/conversionService.ts`):
+fire-and-forget. This app goes a step further: **the HTTP request never
+calls the tracker at all.** It only records the conversion; a separate
+periodic **worker** service does the posting. This is a proper outbox
+relay, not just "persist-then-send-inline":
 
-1. **Persist first.** When a lead becomes `converted`, a `conversion_events`
-   row is written (or the existing one reused) with `status = pending` and
-   the exact outbound JSON in `request_body`. This happens *before* any
-   network call.
-2. **Send.** One immediate attempt is made, in the same request, so the
-   common case returns its result right away.
-3. **Record the outcome.** `status` becomes `sent` or `failed`, and
-   `response_status`, `response_body`, `attempts`, and `last_attempt_at` are
-   stored on the row. A reviewer can see exactly what was sent and what came
-   back (`GET /conversion-events`, or the UI's "Conversion" button).
-4. **Retryable failures** (network error, a 10s timeout, `5xx`, or `429`/`408`) stay `failed`, with
-   `next_retry_at` set by exponential backoff (1m → 5m → 15m, then capped at
-   15m). They are **not** retried in a blocking loop inside the HTTP
-   request, because that would hold the request open and burn the tracker's
-   30 req/min limit.
-5. **The retry command** drains the backlog:
-   ```bash
-   docker compose exec api npm run process-conversions
-   ```
-   It picks up events that are `pending` (never attempted, e.g. the process
-   died between steps 1 and 2) or `failed` with a due `next_retry_at`. It
-   retries them one per second to stay under the rate limit. Run it on a
-   schedule (cron / Task Scheduler) for continuous retries. `4xx` failures
-   (422 validation, 401 auth) are **not** retried, because retrying won't
-   fix them. They keep `next_retry_at = null` and stay visible for a human.
+1. **Persist.** When a lead becomes `converted`
+   (`LeadService.changeStatus` → `ConversionService.recordConversion`), a
+   `conversion_events` row is written (or the existing one re-queued) with
+   `status = pending` and the exact outbound JSON in `request_body`. The API
+   response returns immediately with the event still `pending` — no network
+   call has happened yet.
+2. **Scan.** The `worker` service (its own container, `api/src/jobs/conversionWorker.ts`)
+   polls every 2s (`WORKER_POLL_INTERVAL_MS`). Each pass asks the repository
+   for events that need posting: `pending`, `failed` with a due
+   `next_retry_at`, or `in_process` whose claim has gone stale (see step 3).
+3. **Claim.** Before posting, the worker marks the event `in_process` and
+   sets `processing_started_at` to now — in one atomic conditional `UPDATE`
+   (`PrismaConversionEventRepository.claimForPosting`), so if several workers
+   run at once, exactly one of them wins each row. This is what lets the
+   service scale horizontally (`docker compose up -d --scale worker=3`)
+   without posting the same conversion twice.
+4. **Post & record.** The worker posts the claimed event and writes the
+   outcome — `status` becomes `sent` or `failed`, plus `response_status`,
+   `response_body`, `attempts`, `last_attempt_at` — and clears
+   `processing_started_at`, releasing the claim. A reviewer can see exactly
+   what was sent and what came back (`GET /conversion-events`, or the UI's
+   "Conversion" button, which polls while an event is `pending`/`in_process`).
+5. **Retryable failures** (network error, a 10s timeout, `5xx`, or
+   `429`/`408`) go back to `failed` with `next_retry_at` set by exponential
+   backoff (1m → 5m → 15m, capped). The next scan picks them up once due.
+   `4xx` failures (422 validation, 401 auth) are **not** retried — retrying
+   won't fix them — and stay visible with `next_retry_at = null`.
+6. **Crash recovery.** If a worker dies mid-post, its claimed event is stuck
+   `in_process` with no one to finish it. Once `processing_started_at` is
+   older than `WORKER_STALE_AFTER_MS` (default 5 minutes — comfortably more
+   than a rate-limit wait plus the 10s tracker timeout), another scan treats
+   it as due again and reposts it. This is safe because the `event_id` never
+   changes, so a genuinely-delivered-but-unmarked event just gets
+   `duplicate: true` back.
 
-`duplicate: true` (HTTP 200) counts as success.
+`duplicate: true` (HTTP 200) counts as success. A one-off pass can also be
+triggered by hand instead of waiting for the poll loop:
+```bash
+docker compose exec api npm run process-conversions
+```
 
-Concurrent converts of the same lead (e.g. a double-click) are safe.
-`lead_id` is unique on `conversion_events`, so only one insert wins and the
-other request reuses that row. The attempt counter is incremented
-atomically.
+Concurrent converts of the same lead (e.g. a double-click) are safe the same
+way: `lead_id` is unique on `conversion_events`, so only one insert wins and
+the other request reuses that row. Attempt counts increment atomically.
 
-### Why a table + command, not a queue broker
+### Why a separate worker, and a table instead of a queue broker
 
 The assignment allows "a queue, a table + retry command, or an
-equivalent." The table already gives the guarantees a broker would give
-here: durable persistence before the attempt, at-least-once delivery, and
-retry with backoff. Redis/BullMQ or Kafka would add another service to run
-and explain, with no behavioral gain at this scale.
+equivalent." A table with atomic claim-by-update already gives the
+guarantees a broker would give here — durable persistence before any send,
+exactly-one-claimant delivery, retry with backoff, safe horizontal scaling —
+without an extra service (Redis/BullMQ, Kafka) to run and explain. Splitting
+the scan/claim/post loop into its own `worker` container (rather than firing
+it inline from the HTTP handler) is what actually makes "the API never talks
+to the tracker" true, and is what makes running more than one poster safe.
 
 ### Idempotency and `event_id`
 
@@ -185,9 +203,11 @@ well under the rate limit. The 5xx → retry path needs the mock tracker; see
 ## Reproducing the suggested test sequence
 
 **Through the UI** (http://localhost:8080): create a lead with an email,
-amount, and currency. Set its status to `converted`. The "Conversion event
-detail" panel shows `responseStatus: 201`. Set it to `converted` again and
-you get `200` with `"duplicate": true`, same `eventId`.
+amount, and currency. Set its status to `converted` — the panel shows
+`status: "pending"` and polls automatically until the worker posts it
+(usually within ~2s), then shows `responseStatus: 201`. Set it to
+`converted` again and, once posted, you get `200` with `"duplicate": true`,
+same `eventId`.
 
 **Through curl:**
 
@@ -198,12 +218,17 @@ curl -s -X POST http://localhost:8080/leads -H "Content-Type: application/json" 
   -d '{"name":"Dana Cohen","email":"dana@example.com","amount":199.5,"currency":"USD"}'
 
 curl -s -X PATCH http://localhost:8080/leads/1/status -H "Content-Type: application/json" \
-  -d '{"status":"converted"}'                                                  # 2. 201
+  -d '{"status":"converted"}'                                     # returns status: "pending"
+
+sleep 3   # the worker posts it (poll every 2s by default)
+
+curl -s http://localhost:8080/leads/1/conversion-event             # 2. status: "sent", responseStatus: 201
 
 curl -s -X PATCH http://localhost:8080/leads/1/status -H "Content-Type: application/json" \
-  -d '{"status":"converted"}'                                                  # 3. 200 duplicate:true
+  -d '{"status":"converted"}'                                     # re-queues: back to "pending"
 
-curl -s http://localhost:8080/leads/1/conversion-event                        # stored request/response
+sleep 3
+curl -s http://localhost:8080/leads/1/conversion-event             # 3. 200 duplicate:true, same event_id
 ```
 
 Test #4 (no email/phone → 422) can't reach the tracker through the app,
@@ -219,25 +244,26 @@ folders top to bottom.
 
 The real tracker only returns 5xx when a request sends `simulate`, and the
 app never forwards that. To exercise the app's own retry path end to end,
-start the bundled mock with forced 500s and point the API at it. Shell env
-vars override `.env`:
+start the bundled mock with forced 500s and point the **worker** at it
+(it's the worker that posts, not the api). Shell env vars override `.env`:
 
 ```bash
 MOCK_TRACKER_FORCE_500=true \
 TRACKER_BASE_URL=http://mock-tracker:4000/api/candidate-tracker \
 TRACKER_API_KEY=dev-mock-key \
-docker compose --profile mock up -d --no-deps mock-tracker api
+docker compose --profile mock up -d --no-deps mock-tracker worker
 
-# convert a lead → event is "failed", responseStatus 500, next_retry_at ≈ +60s
+# convert a lead (through the api, as usual) → worker posts within ~2s,
+# event ends up "failed", responseStatus 500, next_retry_at ≈ +60s
 
 MOCK_TRACKER_FORCE_500=false docker compose --profile mock up -d --no-deps mock-tracker
-docker compose exec api npm run process-conversions   # before the window: "no conversion events due"
-# …after ~60s:
-docker compose exec api npm run process-conversions   # attempt #2 -> status=sent httpStatus=201, same event_id
+# the worker's own poll loop retries automatically once next_retry_at passes
+# (attempt #2 -> status=sent httpStatus=201, same event_id); to force it sooner:
+docker compose exec api npm run process-conversions
 
 # back to the real tracker:
 docker compose --profile mock rm -sf mock-tracker
-docker compose up -d --force-recreate --no-deps api
+docker compose up -d --force-recreate --no-deps worker
 ```
 
 (PowerShell: set the variables with `$env:NAME = "value"` first.)
@@ -248,7 +274,8 @@ docker compose up -d --force-recreate --no-deps api
 docker compose up -d db                     # just MySQL (creates the tables on first start)
 cd api && npm install
 # api/.env: DATABASE_URL=mysql://callisto:callisto_dev_password@localhost:3306/callisto + TRACKER_* vars
-npm run dev                                 # :3000
+npm run dev                                 # :3000 — api only; nothing posts conversions without the worker
+npm run dev:worker                          # in another terminal — polls and posts pending conversions
 cd ../web && npm install && npm run dev     # :5173, Vite proxies API paths to :3000
 ```
 
@@ -267,7 +294,8 @@ api/
                        URL, API key and status codes (translated into accepted / duplicate / retryable / permanent)
   src/container.ts     composition root: wires Prisma + HTTP tracker into the services
   src/lib/             backoff policy, constants
-  src/jobs/            process-conversions retry command
+  src/jobs/            conversionWorker.ts (the `worker` service's poll loop);
+                       processConversionEvents.ts (same batch pass, run once by hand)
   src/dev/             mock tracker
 web/
   src/                 React app (components/, api.ts, types.ts)

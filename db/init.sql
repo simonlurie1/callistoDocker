@@ -28,6 +28,7 @@ CREATE TABLE `conversion_events` (
     `id` INTEGER NOT NULL AUTO_INCREMENT,
     `event_id` VARCHAR(128) NOT NULL,
     `lead_id` INTEGER NOT NULL,
+    -- pending | in_process | sent | failed
     `status` VARCHAR(20) NOT NULL DEFAULT 'pending',
     `attempts` INTEGER NOT NULL DEFAULT 0,
     `request_body` TEXT NOT NULL,
@@ -36,11 +37,15 @@ CREATE TABLE `conversion_events` (
     `last_error` TEXT NULL,
     `last_attempt_at` DATETIME(3) NULL,
     `next_retry_at` DATETIME(3) NULL,
+    -- set when a worker claims the event (status = in_process); lets a claim
+    -- abandoned by a crashed worker be detected and taken over
+    `processing_started_at` DATETIME(3) NULL,
     `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated_at` DATETIME(3) NOT NULL,
 
     UNIQUE INDEX `conversion_events_event_id_key`(`event_id`),
     UNIQUE INDEX `conversion_events_lead_id_key`(`lead_id`),
+    INDEX `conversion_events_status_next_retry_at_idx`(`status`, `next_retry_at`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 

@@ -17,7 +17,13 @@ export interface Lead {
   updatedAt: Date;
 }
 
-export type ConversionEventStatus = "pending" | "sent" | "failed";
+/**
+ * pending    — waiting to be posted (new, or re-queued by a re-convert)
+ * in_process — claimed by a worker that is posting it right now
+ * sent       — the tracker has it (accepted or duplicate)
+ * failed     — last attempt failed; retried later if nextRetryAt is set
+ */
+export type ConversionEventStatus = "pending" | "in_process" | "sent" | "failed";
 
 /** What gets reported to the tracker for a conversion (its wire field names). */
 export interface ConversionPayload {
@@ -46,6 +52,8 @@ export interface ConversionEvent {
   lastError: string | null;
   lastAttemptAt: Date | null;
   nextRetryAt: Date | null;
+  /** When the current worker claimed it; set only while status is in_process. */
+  processingStartedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }

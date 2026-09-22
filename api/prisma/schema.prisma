@@ -37,7 +37,7 @@ model ConversionEvent {
   eventId        String    @unique @map("event_id") @db.VarChar(128)
   leadId         Int       @unique @map("lead_id")
   lead           Lead      @relation(fields: [leadId], references: [id])
-  status         String    @default("pending") @db.VarChar(20) // pending | sent | failed
+  status         String    @default("pending") @db.VarChar(20) // pending | in_process | sent | failed
   attempts       Int       @default(0)
   requestBody    String    @map("request_body") @db.Text
   responseStatus Int?      @map("response_status")
@@ -45,8 +45,10 @@ model ConversionEvent {
   lastError      String?   @map("last_error") @db.Text
   lastAttemptAt  DateTime? @map("last_attempt_at")
   nextRetryAt    DateTime? @map("next_retry_at")
+  processingStartedAt DateTime? @map("processing_started_at")
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
 
+  @@index([status, nextRetryAt])
   @@map("conversion_events")
 }

@@ -1,4 +1,8 @@
+import { useEffect, useState } from "react";
+import { fetchConversionEvent } from "../api";
 import type { ConversionEvent } from "../types";
+
+const POLL_MS = 1500;
 
 function safeParse(value: string | null): unknown {
   if (value === null) return null;
@@ -9,14 +13,40 @@ function safeParse(value: string | null): unknown {
   }
 }
 
+/** Waiting for the worker: just recorded / re-queued, or being posted right now. */
+function isInFlight(event: ConversionEvent | null): boolean {
+  return event?.status === "pending" || event?.status === "in_process";
+}
+
 export function ConversionDetail({ event }: { event: ConversionEvent | null }) {
+  const [current, setCurrent] = useState(event);
+  useEffect(() => setCurrent(event), [event]);
+
+  // Converting only records the event; the worker posts it a moment later.
+  // Poll until it reaches sent/failed so the outcome shows up without a refresh.
+  const leadId = current?.leadId;
+  const inFlight = isInFlight(current);
+  useEffect(() => {
+    if (leadId === undefined || !inFlight) return;
+    const timer = setInterval(async () => {
+      try {
+        const fresh = await fetchConversionEvent(leadId);
+        if (fresh) setCurrent(fresh);
+      } catch {
+        // transient; the next tick retries
+      }
+    }, POLL_MS);
+    return () => clearInterval(timer);
+  }, [leadId, inFlight]);
+
   return (
     <section className="card">
       <h2>Conversion event detail</h2>
+      {inFlight && <p className="subtitle">Status: {current?.status} — waiting for the worker to post it…</p>}
       <pre className="event-detail">
-        {event
+        {current
           ? JSON.stringify(
-              { ...event, requestBody: safeParse(event.requestBody), responseBody: safeParse(event.responseBody) },
+              { ...current, requestBody: safeParse(current.requestBody), responseBody: safeParse(current.responseBody) },
               null,
               2
             )

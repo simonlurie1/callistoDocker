@@ -34,6 +34,7 @@ export function toConversionEvent(row: ConversionEventRow): ConversionEvent {
     lastError: row.lastError,
     lastAttemptAt: row.lastAttemptAt,
     nextRetryAt: row.nextRetryAt,
+    processingStartedAt: row.processingStartedAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };

@@ -1,40 +1,25 @@
 import "dotenv/config";
 import { createContainer } from "../container";
 
-// Picks up any conversion events that still need work:
-//  - status = pending, never attempted at all (e.g. the process crashed
-//    right after the initial insert, before the inline send happened)
-//  - status = failed AND due for a retry (nextRetryAt <= now); a failed
-//    event with nextRetryAt = null was a non-retryable error (422/401) and
-//    is intentionally left alone
-//
-// Run this on a schedule (cron, Task Scheduler, a sidecar container, etc.)
-// or by hand:
-//   npm run process-conversions        (locally)
-//   docker compose exec api npm run process-conversions   (in Docker)
-const { conversionService, close } = createContainer();
+// Runs a single batch pass and exits — the same work the worker does each
+// tick, useful for triggering a pass by hand. Safe to run while workers are
+// running: events are claimed before posting.
+//   npm run process-conversions                              (locally)
+//   docker compose exec api npm run process-conversions      (in Docker)
+const { conversionBatchService, close } = createContainer();
 
 async function main() {
-  const due = await conversionService.findDueForRetry();
-
-  if (due.length === 0) {
-    console.log("no conversion events due for retry");
+  const { found, posted, skipped } = await conversionBatchService.runOnce();
+  if (found === 0) {
+    console.log("no conversion events need posting");
     return;
   }
-
-  console.log(`retrying ${due.length} conversion event(s)`);
-  for (const event of due) {
-    const updated = await conversionService.attemptSend(event);
+  for (const event of posted) {
     console.log(
-      `event ${updated.eventId}: attempt #${updated.attempts} -> status=${updated.status} httpStatus=${updated.responseStatus}`
+      `event ${event.eventId}: attempt #${event.attempts} -> status=${event.status} httpStatus=${event.responseStatus ?? "none"}`
     );
-    // Stay well under the 30 req/min tracker rate limit when a batch is due.
-    await sleep(1000);
   }
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  if (skipped > 0) console.log(`${skipped} event(s) claimed by another worker`);
 }
 
 main()

@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Callisto Mini CRM + Conversion Tracker",
-    "description": "CRM API (through nginx on :8080) plus, in the last folder, optional direct calls to the tracker. Run folders top to bottom; ids from earlier requests are captured into collection variables.",
+    "description": "CRM API (through nginx on :8080) plus, in the last folder, optional direct calls to the tracker. Run folders top to bottom (the worker service must be running: converting only records the event, and the worker posts it a few seconds later); ids from earlier requests are captured into collection variables.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -31,6 +31,10 @@
     },
     {
       "key": "raw_event_id",
+      "value": ""
+    },
+    {
+      "key": "event_id",
       "value": ""
     }
   ],
@@ -311,7 +315,7 @@
           ]
         },
         {
-          "name": "Convert lead (1st time) -> tracker 201",
+          "name": "Convert lead -> recorded as pending (not posted inline)",
           "request": {
             "method": "PATCH",
             "header": [
@@ -332,15 +336,44 @@
               "script": {
                 "exec": [
                   "const body = pm.response.json();",
-                  "pm.test('conversion event status is sent', () => pm.expect(body.conversionEvent.status).to.eql('sent'));",
-                  "pm.test('tracker responded 201 (created, not duplicate)', () => pm.expect(body.conversionEvent.responseStatus).to.eql(201));"
+                  "pm.test(\"event recorded as pending\", () => pm.expect(body.conversionEvent.status).to.eql(\"pending\"));",
+                  "pm.test(\"no attempt yet\", () => pm.expect(body.conversionEvent.attempts).to.eql(0));",
+                  "pm.collectionVariables.set(\"event_id\", body.conversionEvent.eventId);"
                 ]
               }
             }
           ]
         },
         {
-          "name": "Convert same lead again -> tracker 200 duplicate:true",
+          "name": "Conversion event once the worker posted it -> tracker 201",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// the worker posts asynchronously; give it a few seconds",
+                  "setTimeout(() => {}, 6000);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test(\"sent\", () => pm.expect(body.data.status).to.eql(\"sent\"));",
+                  "pm.test(\"tracker responded 201\", () => pm.expect(body.data.responseStatus).to.eql(201));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/leads/{{lead_id}}/conversion-event"
+          }
+        },
+        {
+          "name": "Convert same lead again -> event re-queued",
           "request": {
             "method": "PATCH",
             "header": [
@@ -361,13 +394,41 @@
               "script": {
                 "exec": [
                   "const body = pm.response.json();",
-                  "pm.test('tracker responded 200 duplicate', () => pm.expect(body.conversionEvent.responseStatus).to.eql(200));",
-                  "pm.test('duplicate:true in stored response body', () => pm.expect(JSON.parse(body.conversionEvent.responseBody).duplicate).to.eql(true));",
-                  "pm.test(\"same event_id reused, prefixed conv_{lead_id}_\", () => pm.expect(body.conversionEvent.eventId).to.match(new RegExp(\"^conv_\" + pm.collectionVariables.get(\"lead_id\") + \"_\")));"
+                  "pm.test(\"re-queued as pending\", () => pm.expect(body.conversionEvent.status).to.eql(\"pending\"));",
+                  "pm.test(\"same event_id\", () => pm.expect(body.conversionEvent.eventId).to.eql(pm.collectionVariables.get(\"event_id\")));"
                 ]
               }
             }
           ]
+        },
+        {
+          "name": "Conversion event once re-posted -> tracker 200 duplicate:true",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// the worker posts asynchronously; give it a few seconds",
+                  "setTimeout(() => {}, 6000);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test(\"tracker responded 200\", () => pm.expect(body.data.responseStatus).to.eql(200));",
+                  "pm.test(\"duplicate:true\", () => pm.expect(JSON.parse(body.data.responseBody).duplicate).to.eql(true));",
+                  "pm.test(\"both attempts counted\", () => pm.expect(body.data.attempts).to.eql(2));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/leads/{{lead_id}}/conversion-event"
+          }
         }
       ]
     },

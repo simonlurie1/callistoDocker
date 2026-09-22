@@ -8,13 +8,27 @@ export interface NewConversionEvent {
 
 /** Outcome of one send attempt, recorded on the event row. */
 export interface AttemptRecord {
-  status: ConversionEventStatus;
+  status: Extract<ConversionEventStatus, "sent" | "failed">;
   responseStatus: number | null;
   responseBody: string | null;
   lastError: string | null;
   attemptedAt: Date;
   /** null = no retry scheduled (success, or a non-retryable failure). */
   nextRetryAt: Date | null;
+}
+
+/**
+ * An event needs posting when it is:
+ *  - pending (never attempted, or re-queued), or
+ *  - failed with nextRetryAt <= now (a failed event with nextRetryAt = null
+ *    was non-retryable and is left alone), or
+ *  - in_process with processingStartedAt < staleBefore — claimed by a worker
+ *    that never finished (crashed mid-post); reposting is safe because the
+ *    tracker deduplicates on event_id.
+ */
+export interface PostingCriteria {
+  now: Date;
+  staleBefore: Date;
 }
 
 export interface ConversionEventRepository {
@@ -29,14 +43,23 @@ export interface ConversionEventRepository {
    */
   createOrGetExisting(event: NewConversionEvent): Promise<ConversionEvent>;
   /**
-   * Stores an attempt's outcome and increments `attempts` atomically, so
-   * concurrent attempts on the same event never lose a count.
+   * Puts a sent or failed event back to "pending" (clearing any scheduled
+   * retry) so it gets posted again. Events that are pending or in_process are
+   * left untouched. Returns the event as it is afterwards.
+   */
+  requeue(id: number): Promise<ConversionEvent>;
+  /** Events that need posting (see PostingCriteria), oldest first. */
+  findDueForPosting(criteria: PostingCriteria, limit: number): Promise<ConversionEvent[]>;
+  /**
+   * Atomically marks the event in_process with processingStartedAt = now, but
+   * only if it still needs posting per `criteria`. Returns the claimed event,
+   * or null if another worker claimed it first (or it no longer needs
+   * posting). Only the claimer may post it.
+   */
+  claimForPosting(id: number, criteria: PostingCriteria): Promise<ConversionEvent | null>;
+  /**
+   * Stores an attempt's outcome, releases the claim (clears
+   * processingStartedAt) and increments `attempts` atomically.
    */
   recordAttempt(id: number, attempt: AttemptRecord): Promise<ConversionEvent>;
-  /**
-   * Events that still need a send: "pending" (never attempted), or "failed"
-   * with a nextRetryAt at or before `now`. A failed event with nextRetryAt =
-   * null was non-retryable and is excluded.
-   */
-  findDueForRetry(now: Date): Promise<ConversionEvent[]>;
 }

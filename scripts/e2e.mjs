@@ -7,6 +7,7 @@
 //
 // Talks to the REAL tracker configured in .env: every run creates a few
 // leads and sends a few conversions (well under the 30 req/min limit).
+// Conversions are posted by the `worker` service, which must be running.
 
 const BASE = (process.argv[2] ?? "http://localhost:8080").replace(/\/$/, "");
 const RUN = Date.now();
@@ -42,6 +43,18 @@ function check(name, expected, actual, context) {
 
 function section(title) {
   console.log(`\n== ${title}`);
+}
+
+/** Converting only records the event; the worker posts it within a few
+ * seconds. Poll until it leaves pending/in_process. */
+async function waitUntilPosted(leadId, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const event = (await req("GET", `/leads/${leadId}/conversion-event`)).json?.data;
+    if (event && event.status !== "pending" && event.status !== "in_process") return event;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`lead ${leadId}: conversion still not posted after ${timeoutMs}ms — is the worker running?`);
 }
 
 async function createLead(fields) {
@@ -134,22 +147,31 @@ async function main() {
   check("delete an unconverted lead -> 204", 204, (await req("DELETE", `/leads/${noAmount}`)).status);
   check("deleted lead is gone -> 404", 404, (await req("GET", `/leads/${noAmount}`)).status);
 
-  section("conversion against the tracker");
+  section("conversion: recorded by the API, posted by the worker");
   r = await req("PATCH", `/leads/${id}/status`, { status: "converted" });
   check("convert -> 200", 200, r.status, r.text);
   let ev = r.json.conversionEvent;
-  check("event sent (suggested test #2)", "sent", ev.status, r.text);
-  check("tracker responded 201", 201, ev.responseStatus, ev.responseBody);
+  check("recorded as pending, not posted inline", "pending", ev.status, r.text);
+  check("no attempt made yet", 0, ev.attempts);
+  check("no tracker response yet", null, ev.responseStatus);
   const eventId = ev.eventId;
   check("event_id is conv_{lead_id}_{hex}", true, new RegExp(`^conv_${id}_[0-9a-f]{8}$`).test(eventId), eventId);
   check("request body persisted before send", eventId, JSON.parse(ev.requestBody).event_id);
 
+  ev = await waitUntilPosted(id);
+  check("worker posted it: sent (suggested test #2)", "sent", ev.status, ev.responseBody);
+  check("tracker responded 201", 201, ev.responseStatus, ev.responseBody);
+  check("one attempt", 1, ev.attempts);
+  check("claim released after posting", null, ev.processingStartedAt);
+
   r = await req("PATCH", `/leads/${id}/status`, { status: "converted" });
   ev = r.json.conversionEvent;
-  check("re-convert: tracker 200 (suggested test #3)", 200, ev.responseStatus, ev.responseBody);
-  check("re-convert: duplicate:true", true, JSON.parse(ev.responseBody).duplicate);
+  check("re-convert re-queues the same event", "pending", ev.status, r.text);
   check("re-convert: same event_id", eventId, ev.eventId);
-  check("re-convert: still 'sent'", "sent", ev.status);
+  ev = await waitUntilPosted(id);
+  check("re-post: tracker 200 (suggested test #3)", 200, ev.responseStatus, ev.responseBody);
+  check("re-post: duplicate:true", true, JSON.parse(ev.responseBody).duplicate);
+  check("re-post: 'sent'", "sent", ev.status);
   check("both attempts counted", 2, ev.attempts);
 
   check("GET /leads/:id/conversion-event -> 200", 200, (await req("GET", `/leads/${id}/conversion-event`)).status);
@@ -167,7 +189,7 @@ async function main() {
   check("concurrent convert B -> 200", 200, b.status, b.text);
   const events = (await req("GET", "/conversion-events")).json.data.filter((e) => e.leadId === dbl);
   check("exactly one event row for the lead", 1, events.length);
-  check("that event is 'sent'", "sent", events[0]?.status);
+  check("that event gets posted: 'sent'", "sent", (await waitUntilPosted(dbl)).status);
 
   console.log(`\nRESULT: ${passed} passed, ${failed} failed`);
   process.exit(failed === 0 ? 0 : 1);

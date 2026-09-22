@@ -7,11 +7,17 @@ export interface HttpTrackerConfig {
   /** Without a timeout a hung tracker would hang the request (and the retry
    * command) indefinitely; a timeout is reported as a retryable failure. */
   timeoutMs: number;
+  /** Minimum gap between posts, to stay under the tracker's 30 requests/minute
+   * limit (2100ms ≈ 28/min). Enforced per process: N worker replicas can reach
+   * N times that, and the resulting 429s are retried with backoff. */
+  minIntervalMs: number;
 }
 
 /** Talks to Callisto's tracker over HTTP and translates its responses into
  * delivery outcomes. The only code that knows the tracker's status codes. */
 export class HttpConversionTracker implements ConversionTracker {
+  private nextSendAt = 0;
+
   constructor(private readonly config: HttpTrackerConfig) {
     if (!config.apiKey) {
       throw new Error("TRACKER_API_KEY is not set. Add it to your .env file.");
@@ -19,6 +25,7 @@ export class HttpConversionTracker implements ConversionTracker {
   }
 
   async send(payload: ConversionPayload): Promise<DeliveryResult> {
+    await this.throttle();
     let res: Response;
     let text: string;
     try {
@@ -45,6 +52,12 @@ export class HttpConversionTracker implements ConversionTracker {
     } catch (err) {
       return { httpStatus: null, body: null, error: (err as Error).message };
     }
+  }
+
+  private async throttle(): Promise<void> {
+    const wait = this.nextSendAt - Date.now();
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    this.nextSendAt = Date.now() + this.config.minIntervalMs;
   }
 
   private headers(): Record<string, string> {

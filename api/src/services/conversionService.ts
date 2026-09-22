@@ -4,6 +4,11 @@ import type { ConversionEventRepository } from "../repositories/ConversionEventR
 import type { ConversionTracker } from "../tracker/ConversionTracker";
 import { nextRetryDelaySeconds } from "../lib/backoff";
 
+// The event_id is `conv_{lead_id}_{random}`, generated once per lead and
+// reused for every post of that conversion. A bare `conv_{lead_id}` collides
+// at the tracker whenever the DB is reset or another environment shares the
+// API key (lead ids restart at 1, and the tracker then answers duplicate:true
+// for a conversion it has never seen).
 function buildPayload(lead: Lead, eventId: string): ConversionPayload {
   return {
     event_id: eventId,
@@ -24,18 +29,28 @@ export class ConversionService {
   ) {}
 
   /**
-   * Called right after a lead's status becomes "converted" (including
-   * re-converting an already-converted lead, which resends the same event_id
-   * so the tracker answers duplicate:true instead of counting it twice).
-   * Persists the event first, then makes one immediate send attempt; a
-   * retryable failure is left for the retry command to pick up later.
+   * Called when a lead's status becomes "converted". Only records the
+   * conversion as a pending event — posting it is the batch service's job
+   * (ConversionBatchService, run by the worker).
+   *
+   * Re-converting an already-converted lead re-queues its existing event, so
+   * the same event_id is posted again and the tracker answers duplicate:true
+   * instead of counting it twice. An event that is already pending or being
+   * posted is left as is.
    */
-  async dispatchForLead(lead: Lead): Promise<ConversionEvent> {
-    const event = await this.getOrCreateEvent(lead);
-    return this.attemptSend(event);
+  async recordConversion(lead: Lead): Promise<ConversionEvent> {
+    const existing = await this.events.findByLeadId(lead.id);
+    if (existing) return this.events.requeue(existing.id);
+
+    const eventId = `conv_${lead.id}_${randomUUID().slice(0, 8)}`;
+    return this.events.createOrGetExisting({
+      eventId,
+      leadId: lead.id,
+      payload: buildPayload(lead, eventId),
+    });
   }
 
-  /** Sends the persisted event and records the outcome on it. */
+  /** Posts an event the caller has claimed, and records the outcome on it. */
   async attemptSend(event: ConversionEvent): Promise<ConversionEvent> {
     const result = await this.tracker.send(event.payload);
     const delivered = result.outcome === "accepted" || result.outcome === "duplicate";
@@ -59,31 +74,5 @@ export class ConversionService {
 
   listEvents(): Promise<ConversionEvent[]> {
     return this.events.findAll();
-  }
-
-  findDueForRetry(now: Date = new Date()): Promise<ConversionEvent[]> {
-    return this.events.findDueForRetry(now);
-  }
-
-  /**
-   * The outbox step: the event exists (with its final payload) before any
-   * send is attempted. One event per lead, so retries and re-converts reuse
-   * the same event_id.
-   *
-   * The event_id is `conv_{lead_id}_{random}`, generated once. A bare
-   * `conv_{lead_id}` collides at the tracker whenever the DB is reset or
-   * another environment shares the API key (lead ids restart at 1, and the
-   * tracker then answers duplicate:true for a conversion it has never seen).
-   */
-  private async getOrCreateEvent(lead: Lead): Promise<ConversionEvent> {
-    const existing = await this.events.findByLeadId(lead.id);
-    if (existing) return existing;
-
-    const eventId = `conv_${lead.id}_${randomUUID().slice(0, 8)}`;
-    return this.events.createOrGetExisting({
-      eventId,
-      leadId: lead.id,
-      payload: buildPayload(lead, eventId),
-    });
   }
 }

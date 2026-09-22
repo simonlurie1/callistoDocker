@@ -36,6 +36,25 @@ services:
     ports:
       - "${API_PORT:-3000}:3000"
 
+  # Periodic batch service: scans conversion_events for events that need
+  # posting, claims each one (in_process + processing_started_at) and posts
+  # it to the tracker. Same image as the api, different entry point. Safe to
+  # scale (`docker compose up -d --scale worker=2`): claims are atomic.
+  worker:
+    build: ./api
+    command: ["node", "dist/jobs/conversionWorker.js"]
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      TRACKER_BASE_URL: ${TRACKER_BASE_URL}
+      TRACKER_API_KEY: ${TRACKER_API_KEY}
+      WORKER_POLL_INTERVAL_MS: ${WORKER_POLL_INTERVAL_MS:-2000}
+      WORKER_BATCH_SIZE: ${WORKER_BATCH_SIZE:-10}
+      WORKER_STALE_AFTER_MS: ${WORKER_STALE_AFTER_MS:-300000}
+
   web:
     build: ./web
     restart: unless-stopped

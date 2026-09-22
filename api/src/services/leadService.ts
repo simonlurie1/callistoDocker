@@ -133,7 +133,7 @@ export class LeadService {
     const updated = await this.leads.updateStatus(id, newStatus);
 
     if (newStatus === "converted") {
-      const conversionEvent = await this.conversions.dispatchForLead(updated);
+      const conversionEvent = await this.conversions.recordConversion(updated);
       return { lead: updated, conversionEvent };
     }
 

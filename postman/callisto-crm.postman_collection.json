@@ -1,0 +1,486 @@
+{
+  "info": {
+    "name": "Callisto Mini CRM + Conversion Tracker",
+    "description": "CRM API (through nginx on :8080) plus, in the last folder, optional direct calls to the tracker. Run folders top to bottom; ids from earlier requests are captured into collection variables.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "lead_id",
+      "value": ""
+    },
+    {
+      "key": "lead_no_amount_id",
+      "value": ""
+    },
+    {
+      "key": "lead_lost_id",
+      "value": ""
+    },
+    {
+      "key": "tracker_base_url",
+      "value": "https://bipro2interface.sseku.com/api/candidate-tracker"
+    },
+    {
+      "key": "tracker_api_key",
+      "value": "paste-your-real-key-here"
+    },
+    {
+      "key": "raw_event_id",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Connectivity",
+      "item": [
+        {
+          "name": "Ping tracker (via app)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/conversion-events/tracker-ping"
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Leads CRUD",
+      "item": [
+        {
+          "name": "Create lead (full, ready to convert)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('lead_id', body.data.id);",
+                  "pm.test('status 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/leads",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Dana Cohen\",\n  \"email\": \"dana@example.com\",\n  \"source\": \"facebook\",\n  \"amount\": 199.50,\n  \"currency\": \"USD\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Create lead (no amount yet)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('lead_no_amount_id', body.data.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/leads",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Phone Only\",\n  \"phone\": \"+972500000000\",\n  \"source\": \"manual\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Create lead (will be marked lost)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('lead_lost_id', body.data.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/leads",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Will Be Lost\",\n  \"email\": \"lost@example.com\",\n  \"amount\": 10,\n  \"currency\": \"USD\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Create lead - validation error (no contact)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/leads",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"No Contact\",\n  \"amount\": 50,\n  \"currency\": \"USD\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('422 validation error', () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List all leads",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/leads"
+          }
+        },
+        {
+          "name": "List leads filtered by status",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/leads?status=new"
+          }
+        },
+        {
+          "name": "List leads filtered by source",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/leads?source=facebook"
+          }
+        },
+        {
+          "name": "Get lead by id",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/leads/{{lead_id}}"
+          }
+        },
+        {
+          "name": "Update lead fields (not status)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/leads/{{lead_id}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source\": \"google\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Update lead - rejects status field (400)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/leads/{{lead_id}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"lost\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('400 use dedicated endpoint', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Status changes & conversion",
+      "item": [
+        {
+          "name": "Convert without amount - 422",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/leads/{{lead_no_amount_id}}/status",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"converted\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('422 missing amount/currency', () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mark lead as lost",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/leads/{{lead_lost_id}}/status",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"lost\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Convert a lost lead - 409",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/leads/{{lead_lost_id}}/status",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"converted\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('409 cannot convert lost lead', () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Convert lead (1st time) -> tracker 201",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/leads/{{lead_id}}/status",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"converted\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('conversion event status is sent', () => pm.expect(body.conversionEvent.status).to.eql('sent'));",
+                  "pm.test('tracker responded 201 (created, not duplicate)', () => pm.expect(body.conversionEvent.responseStatus).to.eql(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Convert same lead again -> tracker 200 duplicate:true",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/leads/{{lead_id}}/status",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"converted\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('tracker responded 200 duplicate', () => pm.expect(body.conversionEvent.responseStatus).to.eql(200));",
+                  "pm.test('duplicate:true in stored response body', () => pm.expect(JSON.parse(body.conversionEvent.responseBody).duplicate).to.eql(true));",
+                  "pm.test(\"same event_id reused, prefixed conv_{lead_id}_\", () => pm.expect(body.conversionEvent.eventId).to.match(new RegExp(\"^conv_\" + pm.collectionVariables.get(\"lead_id\") + \"_\")));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Conversion events (reviewer visibility)",
+      "item": [
+        {
+          "name": "List all conversion events",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/conversion-events"
+          }
+        },
+        {
+          "name": "Get conversion event for a lead",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/leads/{{lead_id}}/conversion-event"
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Direct tracker calls (optional, bypasses the CRM)",
+      "description": "For independently confirming the tracker's own behavior (auth, validation, simulate) exactly as documented in the assignment. Set tracker_api_key first. Not required to grade the CRM app - the app's own retry logic is exercised through folder 3 and the mock tracker (see README).",
+      "item": [
+        {
+          "name": "GET /ping (real tracker)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tracker_api_key}}"
+              }
+            ],
+            "url": "{{tracker_base_url}}/ping"
+          }
+        },
+        {
+          "name": "POST /conversions - 422 (no contact)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tracker_api_key}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{tracker_base_url}}/conversions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"conv_postman_no_contact\",\n  \"amount\": 10,\n  \"currency\": \"USD\"\n}"
+            }
+          }
+        },
+        {
+          "name": "POST /conversions - simulate 500",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tracker_api_key}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{tracker_base_url}}/conversions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{raw_event_id}}\",\n  \"email\": \"demo@example.com\",\n  \"amount\": 10,\n  \"currency\": \"USD\",\n  \"simulate\": \"server_error\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.collectionVariables.set(\"raw_event_id\", \"conv_postman_\" + Date.now());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /conversions - retry same event_id without simulate -> 201",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tracker_api_key}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{tracker_base_url}}/conversions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{raw_event_id}}\",\n  \"email\": \"demo@example.com\",\n  \"amount\": 10,\n  \"currency\": \"USD\"\n}"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

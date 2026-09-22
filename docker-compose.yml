@@ -1,0 +1,57 @@
+services:
+  db:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build: ./api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      PORT: 3000
+      TRACKER_BASE_URL: ${TRACKER_BASE_URL}
+      TRACKER_API_KEY: ${TRACKER_API_KEY}
+    ports:
+      - "${API_PORT:-3000}:3000"
+
+  web:
+    build: ./web
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "${WEB_PORT:-8080}:80"
+
+  # Optional, dev-only stand-in for the real tracker, for exercising the
+  # 5xx -> retry path without spending the real rate limit. Not started by a
+  # plain `docker compose up`; see README "Testing retries with the mock".
+  mock-tracker:
+    build: ./api
+    profiles: ["mock"]
+    entrypoint: ["npx", "tsx", "src/dev/mockTracker.ts"]
+    environment:
+      MOCK_TRACKER_PORT: 4000
+      MOCK_TRACKER_API_KEY: dev-mock-key
+      MOCK_TRACKER_FORCE_500: ${MOCK_TRACKER_FORCE_500:-false}
+    ports:
+      - "4000:4000"
+
+volumes:
+  mysql-data:

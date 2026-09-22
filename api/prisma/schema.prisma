@@ -1,0 +1,47 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// MySQL has no native enum type we use here (kept as plain strings, same as
+// the SQLite v1) so both editions validate `status` identically in
+// application code (see src/lib/constants.ts) instead of relying on the DB.
+model Lead {
+  id        Int      @id @default(autoincrement())
+  name      String   @db.VarChar(255)
+  email     String?  @db.VarChar(255)
+  phone     String?  @db.VarChar(32)
+  source    String?  @db.VarChar(100)
+  status    String   @default("new") @db.VarChar(20)
+  amount    Float?
+  currency  String?  @db.VarChar(3)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  conversionEvents ConversionEvent[]
+
+  @@map("leads")
+}
+
+model ConversionEvent {
+  id             Int       @id @default(autoincrement())
+  eventId        String    @unique @map("event_id") @db.VarChar(128)
+  leadId         Int       @unique @map("lead_id")
+  lead           Lead      @relation(fields: [leadId], references: [id])
+  status         String    @default("pending") @db.VarChar(20) // pending | sent | failed
+  attempts       Int       @default(0)
+  requestBody    String    @map("request_body") @db.Text
+  responseStatus Int?      @map("response_status")
+  responseBody   String?   @map("response_body") @db.Text
+  lastError      String?   @map("last_error") @db.Text
+  lastAttemptAt  DateTime? @map("last_attempt_at")
+  nextRetryAt    DateTime? @map("next_retry_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@map("conversion_events")
+}

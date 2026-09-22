@@ -1,0 +1,168 @@
+:root {
+  color-scheme: light dark;
+  --border: #d0d5dd;
+  --accent: #3b6fe0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 24px 16px 64px;
+  line-height: 1.4;
+}
+
+header {
+  margin-bottom: 24px;
+}
+h1 {
+  margin: 0 0 4px;
+}
+.subtitle {
+  margin: 0;
+  opacity: 0.7;
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin-bottom: 20px;
+}
+
+h2 {
+  margin-top: 0;
+  font-size: 1.05rem;
+}
+
+.field-row {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.85rem;
+  flex: 1;
+  min-width: 160px;
+}
+
+input,
+select {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+button {
+  padding: 7px 14px;
+  border-radius: 4px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: white;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+button.secondary {
+  background: transparent;
+  color: var(--accent);
+}
+
+button:hover {
+  opacity: 0.88;
+}
+
+.filters {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.filters label {
+  min-width: 140px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+th,
+td {
+  text-align: left;
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.status-badge {
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  display: inline-block;
+}
+.status-new {
+  background: #dbe6ff;
+  color: #1d3f8f;
+}
+.status-contacted {
+  background: #fff0c2;
+  color: #7a5b00;
+}
+.status-qualified {
+  background: #d9f2e3;
+  color: #14663d;
+}
+.status-converted {
+  background: #c7f0d8;
+  color: #0b6b3a;
+}
+.status-lost {
+  background: #f4d3d3;
+  color: #8a1f1f;
+}
+
+.row-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.row-actions select {
+  font-size: 0.8rem;
+  padding: 3px 4px;
+}
+.row-actions button {
+  padding: 4px 8px;
+  font-size: 0.75rem;
+}
+
+.error {
+  color: #c0392b;
+  font-size: 0.85rem;
+  margin-left: 10px;
+}
+
+.event-detail {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(127, 127, 127, 0.08);
+  padding: 12px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  max-height: 340px;
+  overflow: auto;
+}

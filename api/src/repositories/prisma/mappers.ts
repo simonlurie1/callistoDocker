@@ -1,5 +1,5 @@
 import type { ConversionEvent as ConversionEventRow, Lead as LeadRow } from "@prisma/client";
-import type { ConversionEvent, ConversionEventStatus, Lead } from "../../domain/models";
+import type { ConversionEvent, ConversionEventStatus, ConversionPayload, Lead } from "../../domain/models";
 import type { LeadStatus } from "../../lib/constants";
 
 // `status` columns are plain VARCHARs (see schema.prisma), so Prisma types
@@ -27,7 +27,8 @@ export function toConversionEvent(row: ConversionEventRow): ConversionEvent {
     leadId: row.leadId,
     status: row.status as ConversionEventStatus,
     attempts: row.attempts,
-    requestBody: row.requestBody,
+    // request_body is a TEXT column holding the payload as JSON
+    payload: JSON.parse(row.requestBody) as ConversionPayload,
     responseStatus: row.responseStatus,
     responseBody: row.responseBody,
     lastError: row.lastError,

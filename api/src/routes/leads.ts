@@ -1,10 +1,11 @@
 import { Router } from "express";
 import type { ConversionService } from "../services/conversionService";
 import type { LeadService } from "../services/leadService";
-import { NotFoundError } from "../lib/errors";
+import { NotFoundError } from "../domain/errors";
+import { parseLeadFields, parseStatus, parseStatusFilter } from "./leadRequests";
+import { presentConversionEvent } from "./presenters";
 
-// A non-numeric id (e.g. /leads/abc) would otherwise reach the database as
-// NaN and surface as a 500.
+// A non-numeric id (e.g. /leads/abc) can't match any lead.
 function parseId(raw: string): number {
   const id = Number(raw);
   if (!Number.isInteger(id) || id <= 0) throw new NotFoundError(`lead ${raw} not found`);
@@ -18,8 +19,8 @@ export function createLeadsRouter(leadService: LeadService, conversionService: C
     try {
       const { status, source } = req.query;
       const leads = await leadService.listLeads({
-        status: typeof status === "string" ? status : undefined,
-        source: typeof source === "string" ? source : undefined,
+        status: parseStatusFilter(status),
+        source: typeof source === "string" && source !== "" ? source : undefined,
       });
       res.json({ data: leads });
     } catch (err) {
@@ -29,7 +30,7 @@ export function createLeadsRouter(leadService: LeadService, conversionService: C
 
   router.post("/", async (req, res, next) => {
     try {
-      const lead = await leadService.createLead(req.body ?? {});
+      const lead = await leadService.createLead(parseLeadFields(req.body));
       res.status(201).json({ data: lead });
     } catch (err) {
       next(err);
@@ -53,7 +54,7 @@ export function createLeadsRouter(leadService: LeadService, conversionService: C
           message: "status changes must go through PATCH /leads/:id/status",
         });
       }
-      const lead = await leadService.updateLead(parseId(req.params.id), req.body ?? {});
+      const lead = await leadService.updateLead(parseId(req.params.id), parseLeadFields(req.body));
       res.json({ data: lead });
     } catch (err) {
       next(err);
@@ -71,8 +72,12 @@ export function createLeadsRouter(leadService: LeadService, conversionService: C
 
   router.patch("/:id/status", async (req, res, next) => {
     try {
-      const result = await leadService.changeStatus(parseId(req.params.id), req.body?.status);
-      res.json({ data: result.lead, conversionEvent: result.conversionEvent ?? undefined });
+      const id = parseId(req.params.id);
+      const { lead, conversionEvent } = await leadService.changeStatus(id, parseStatus(req.body?.status));
+      res.json({
+        data: lead,
+        conversionEvent: conversionEvent ? presentConversionEvent(conversionEvent) : undefined,
+      });
     } catch (err) {
       next(err);
     }
@@ -84,7 +89,7 @@ export function createLeadsRouter(leadService: LeadService, conversionService: C
       if (!event) {
         return res.status(404).json({ error: "not_found", message: "no conversion event for this lead" });
       }
-      res.json({ data: event });
+      res.json({ data: presentConversionEvent(event) });
     } catch (err) {
       next(err);
     }

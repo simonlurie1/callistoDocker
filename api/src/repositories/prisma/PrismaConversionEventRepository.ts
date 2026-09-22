@@ -23,7 +23,13 @@ export class PrismaConversionEventRepository implements ConversionEventRepositor
   async createOrGetExisting(event: NewConversionEvent): Promise<ConversionEvent> {
     try {
       const row = await this.prisma.conversionEvent.create({
-        data: { ...event, status: "pending", attempts: 0 },
+        data: {
+          eventId: event.eventId,
+          leadId: event.leadId,
+          requestBody: JSON.stringify(event.payload),
+          status: "pending",
+          attempts: 0,
+        },
       });
       return toConversionEvent(row);
     } catch (err) {

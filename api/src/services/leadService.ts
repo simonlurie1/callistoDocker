@@ -1,88 +1,47 @@
-import { isLeadStatus, isSupportedCurrency, SUPPORTED_CURRENCIES } from "../lib/constants";
-import { HttpError, NotFoundError, ValidationError } from "../lib/errors";
+import { isSupportedCurrency, SUPPORTED_CURRENCIES, type LeadStatus } from "../lib/constants";
+import { ConflictError, NotFoundError, ValidationError } from "../domain/errors";
 import type { ConversionEvent, Lead } from "../domain/models";
-import type { LeadFilter, LeadRepository } from "../repositories/LeadRepository";
+import type { LeadFields, LeadFilter, LeadRepository } from "../repositories/LeadRepository";
 import type { ConversionService } from "./conversionService";
 
-export interface CreateLeadInput {
-  name?: unknown;
-  email?: unknown;
-  phone?: unknown;
-  source?: unknown;
-  amount?: unknown;
-  currency?: unknown;
+/** Lead field values from the caller: undefined = not provided, null = empty / cleared. */
+export interface LeadFieldsInput {
+  name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  source?: string | null;
+  amount?: number | null;
+  currency?: string | null;
 }
-
-export type UpdateLeadInput = CreateLeadInput;
 
 export interface ChangeStatusResult {
   lead: Lead;
   conversionEvent?: ConversionEvent;
 }
 
-// Pragmatic format check (not full RFC 5322): catches what the tracker
-// rejects as "must be a valid email address" before the lead is saved,
-// instead of the conversion failing permanently with a 422 later.
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const PHONE_RE = /^\+?[0-9\s\-()]{6,32}$/;
+type LeadDraft = Omit<LeadFields, "name"> & { name: string | null };
 
-function normalizeString(value: unknown): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  const trimmed = String(value).trim();
-  return trimmed.length === 0 ? undefined : trimmed;
-}
-
-/** undefined/null/"" mean "no amount"; anything else must parse as a number
- * (NaN is returned for booleans, objects, "12abc", and caught by validation). */
-function toAmount(value: unknown): number | undefined {
-  if (value === undefined || value === null || value === "") return undefined;
-  if (typeof value !== "number" && typeof value !== "string") return NaN;
-  return Number(value);
-}
-
-/** Validation shared by create and (non-status) update. Does not enforce the
- * conversion-only rules (contact + amount) — those are checked separately in
- * changeStatus, since a lead is allowed to exist without them until it's
- * converted. Length limits mirror the DB columns so oversized input is a 422,
- * not a database error. */
-function validateContactAndCurrency(input: {
-  name?: string;
-  email?: string;
-  phone?: string;
-  source?: string;
-  amount?: number;
-  currency?: string;
-}) {
+/** The rules every lead must satisfy, whether just created or edited. The
+ * conversion-only rules (amount required, etc.) live in changeStatus, since a
+ * lead may exist without them until it's converted. */
+function assertLeadRules(draft: LeadDraft): asserts draft is LeadFields {
   const errors: Record<string, string[]> = {};
 
-  if (!input.name) {
+  if (!draft.name) {
     errors.name = ["name is required"];
-  } else if (input.name.length > 255) {
-    errors.name = ["name must be at most 255 characters"];
   }
-  if (!input.email && !input.phone) {
+  if (!draft.email && !draft.phone) {
     errors.contact = ["email is required if phone is empty, and vice versa"];
   }
-  if (input.email && (input.email.length > 255 || !EMAIL_RE.test(input.email))) {
-    errors.email = ["email must be a valid email address"];
+  if (draft.amount !== null && draft.amount <= 0) {
+    errors.amount = ["amount must be greater than 0"];
   }
-  if (input.phone && !PHONE_RE.test(input.phone)) {
-    errors.phone = ["phone must be 6-32 characters: digits, spaces, dashes, parentheses, optional leading +"];
-  }
-  if (input.source && input.source.length > 100) {
-    errors.source = ["source must be at most 100 characters"];
-  }
-  if (input.currency && !isSupportedCurrency(input.currency)) {
+  if (draft.currency && !isSupportedCurrency(draft.currency)) {
     errors.currency = [`currency must be one of: ${SUPPORTED_CURRENCIES.join(", ")}`];
   }
-  if (input.amount !== undefined && (!Number.isFinite(input.amount) || input.amount <= 0)) {
-    errors.amount = ["amount must be a number greater than 0"];
-  }
-  // amount and currency travel together: a bare amount with no currency (or
-  // vice versa) is accepted at creation time (both are only *required* once
-  // you try to convert), but if you provide one you must provide both, since
-  // a currency-less amount is meaningless downstream.
-  if ((input.amount !== undefined) !== (input.currency !== undefined)) {
+  // A bare amount without a currency (or vice versa) is meaningless, so
+  // they're set together — though neither is required until conversion.
+  if ((draft.amount !== null) !== (draft.currency !== null)) {
     errors.currency = [...(errors.currency ?? []), "amount and currency must be provided together"];
   }
 
@@ -97,17 +56,8 @@ export class LeadService {
     private readonly conversions: ConversionService
   ) {}
 
-  async listLeads(filter: { status?: string; source?: string }): Promise<Lead[]> {
-    const where: LeadFilter = {};
-    if (filter.status) {
-      if (!isLeadStatus(filter.status)) {
-        throw new ValidationError("validation_error", { status: [`unknown status: ${filter.status}`] });
-      }
-      where.status = filter.status;
-    }
-    if (filter.source) where.source = filter.source;
-
-    return this.leads.findMany(where);
+  listLeads(filter: LeadFilter): Promise<Lead[]> {
+    return this.leads.findMany(filter);
   }
 
   async getLead(id: number): Promise<Lead> {
@@ -116,78 +66,57 @@ export class LeadService {
     return lead;
   }
 
-  async createLead(input: CreateLeadInput): Promise<Lead> {
-    const name = normalizeString(input.name);
-    const email = normalizeString(input.email);
-    const phone = normalizeString(input.phone);
-    const source = normalizeString(input.source);
-    const currency = normalizeString(input.currency)?.toUpperCase();
-    const amount = toAmount(input.amount);
-
-    validateContactAndCurrency({ name, email, phone, source, amount, currency });
-
-    return this.leads.create({
-      name: name!,
-      email: email ?? null,
-      phone: phone ?? null,
-      source: source ?? null,
-      amount: amount ?? null,
-      currency: currency ?? null,
-    });
+  async createLead(input: LeadFieldsInput): Promise<Lead> {
+    const draft: LeadDraft = {
+      name: input.name ?? null,
+      email: input.email ?? null,
+      phone: input.phone ?? null,
+      source: input.source ?? null,
+      amount: input.amount ?? null,
+      currency: input.currency ?? null,
+    };
+    assertLeadRules(draft);
+    return this.leads.create(draft);
   }
 
-  /** Generic field update. Deliberately does NOT accept `status` — status
-   * changes are a dedicated action (changeStatus) with their own rules, per
-   * the assignment's "not a generic update any field" requirement.
-   *
-   * An omitted field keeps its value; a field sent as null or "" is cleared.
-   * The locals below hold the merged final state, which is validated as a
-   * whole and then written in full. */
-  async updateLead(id: number, input: UpdateLeadInput): Promise<Lead> {
+  /** Generic field update. Deliberately has no `status` — status changes are
+   * a dedicated action (changeStatus) with their own rules. Omitted fields
+   * keep their value, null clears; the merged result must still satisfy the
+   * lead rules (so e.g. the last contact can't be cleared). */
+  async updateLead(id: number, input: LeadFieldsInput): Promise<Lead> {
     const existing = await this.getLead(id);
+    const merge = <T>(value: T | undefined, current: T): T => (value === undefined ? current : value);
 
-    const name = input.name === undefined ? existing.name : normalizeString(input.name);
-    const email = input.email === undefined ? existing.email ?? undefined : normalizeString(input.email);
-    const phone = input.phone === undefined ? existing.phone ?? undefined : normalizeString(input.phone);
-    const source = input.source === undefined ? existing.source ?? undefined : normalizeString(input.source);
-    const currency =
-      input.currency === undefined
-        ? existing.currency ?? undefined
-        : normalizeString(input.currency)?.toUpperCase();
-    const amount = input.amount === undefined ? existing.amount ?? undefined : toAmount(input.amount);
-
-    validateContactAndCurrency({ name, email, phone, source, amount, currency });
-
-    return this.leads.update(id, {
-      name: name!,
-      email: email ?? null,
-      phone: phone ?? null,
-      source: source ?? null,
-      amount: amount ?? null,
-      currency: currency ?? null,
-    });
+    const draft: LeadDraft = {
+      name: merge<string | null>(input.name, existing.name),
+      email: merge(input.email, existing.email),
+      phone: merge(input.phone, existing.phone),
+      source: merge(input.source, existing.source),
+      amount: merge(input.amount, existing.amount),
+      currency: merge(input.currency, existing.currency),
+    };
+    assertLeadRules(draft);
+    return this.leads.update(id, draft);
   }
 
+  /** A lead with a conversion event is kept: deleting it would erase the
+   * delivery audit trail. */
   async deleteLead(id: number): Promise<void> {
     await this.getLead(id);
     if (await this.conversions.getEventForLead(id)) {
-      throw new HttpError(409, "cannot delete a lead that has a conversion event (it would erase the delivery audit trail)");
+      throw new ConflictError(
+        "cannot delete a lead that has a conversion event (it would erase the delivery audit trail)"
+      );
     }
     await this.leads.delete(id);
   }
 
-  async changeStatus(id: number, newStatus: unknown): Promise<ChangeStatusResult> {
-    if (!isLeadStatus(newStatus)) {
-      throw new ValidationError("validation_error", {
-        status: [`status must be one of: new, contacted, qualified, converted, lost`],
-      });
-    }
-
+  async changeStatus(id: number, newStatus: LeadStatus): Promise<ChangeStatusResult> {
     const lead = await this.getLead(id);
 
     if (newStatus === "converted") {
       if (lead.status === "lost") {
-        throw new HttpError(409, "cannot convert a lost lead");
+        throw new ConflictError("cannot convert a lost lead");
       }
       const hasContact = Boolean(lead.email || lead.phone);
       const hasAmount = lead.amount !== null;

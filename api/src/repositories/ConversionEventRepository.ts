@@ -1,16 +1,16 @@
-import type { ConversionEvent, ConversionEventStatus } from "../domain/models";
+import type { ConversionEvent, ConversionEventStatus, ConversionPayload } from "../domain/models";
 
 export interface NewConversionEvent {
   eventId: string;
   leadId: number;
-  requestBody: string;
+  payload: ConversionPayload;
 }
 
 /** Outcome of one send attempt, recorded on the event row. */
 export interface AttemptRecord {
   status: ConversionEventStatus;
-  responseStatus: number;
-  responseBody: string;
+  responseStatus: number | null;
+  responseBody: string | null;
   lastError: string | null;
   attemptedAt: Date;
   /** null = no retry scheduled (success, or a non-retryable failure). */

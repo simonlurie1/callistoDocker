@@ -19,15 +19,29 @@ export interface Lead {
 
 export type ConversionEventStatus = "pending" | "sent" | "failed";
 
+/** What gets reported to the tracker for a conversion (its wire field names). */
+export interface ConversionPayload {
+  event_id: string;
+  event_name?: string;
+  email?: string;
+  phone?: string;
+  lead_id?: string;
+  amount?: number;
+  currency?: string;
+  occurred_at?: string;
+}
+
 export interface ConversionEvent {
   id: number;
   eventId: string;
   leadId: number;
   status: ConversionEventStatus;
   attempts: number;
-  /** Exact JSON body sent to the tracker (persisted before the first send). */
-  requestBody: string;
+  /** Persisted before the first send and resent unchanged on every retry. */
+  payload: ConversionPayload;
+  /** null when the last attempt got no HTTP response (network error / timeout). */
   responseStatus: number | null;
+  /** Raw response body of the last attempt, kept verbatim for auditing. */
   responseBody: string | null;
   lastError: string | null;
   lastAttemptAt: Date | null;

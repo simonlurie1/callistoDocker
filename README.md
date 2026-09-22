@@ -73,7 +73,9 @@ All responses are JSON. Errors look like `{"error": "...", "errors": {field: [me
 ### Lead rules
 
 - `name` is required. `email` or `phone` is **always** required, not only before conversion.
-- `currency` must be in a supported ISO 4217 allowlist and is uppercased on save. `amount` and `currency` must be sent together.
+- `email` must look like a valid address, and `phone` must be 6–32 characters of digits/spaces/dashes/parentheses with an optional leading `+`. This matches the tracker's own limits, so bad contact data is rejected when it's saved rather than failing the conversion permanently later.
+- `amount` must be a number greater than 0. `currency` must be in a supported ISO 4217 allowlist and is uppercased on save. `amount` and `currency` must be sent together.
+- `PATCH /leads/:id`: an omitted field keeps its value, and a field sent as `null` or `""` is cleared. The merged result must still pass these rules, so you can't clear the last contact.
 - Converting requires contact + `amount` + `currency` (422 otherwise).
 - A `lost` lead cannot be converted (409).
 - Converting an already-`converted` lead is allowed: it re-sends the same `event_id`, and the tracker replies `duplicate: true`.
@@ -94,7 +96,7 @@ fire-and-forget. This is how the app handles it instead
    `response_status`, `response_body`, `attempts`, and `last_attempt_at` are
    stored on the row. A reviewer can see exactly what was sent and what came
    back (`GET /conversion-events`, or the UI's "Conversion" button).
-4. **Retryable failures** (network error or `5xx`) stay `failed`, with
+4. **Retryable failures** (network error, a 10s timeout, `5xx`, or `429`/`408`) stay `failed`, with
    `next_retry_at` set by exponential backoff (1m → 5m → 15m, then capped at
    15m). They are **not** retried in a blocking loop inside the HTTP
    request, because that would hold the request open and burn the tracker's
@@ -111,6 +113,11 @@ fire-and-forget. This is how the app handles it instead
    fix them. They keep `next_retry_at = null` and stay visible for a human.
 
 `duplicate: true` (HTTP 200) counts as success.
+
+Concurrent converts of the same lead (e.g. a double-click) are safe.
+`lead_id` is unique on `conversion_events`, so only one insert wins and the
+other request reuses that row. The attempt counter is incremented
+atomically.
 
 ### Why a table + command, not a queue broker
 

@@ -32,8 +32,12 @@ export function LeadsTable({ leads, onChanged, onShowConversion }: Props) {
 
   async function handleDelete(lead: Lead) {
     if (!confirm(`Delete lead #${lead.id}?`)) return;
-    await deleteLead(lead.id);
-    onChanged();
+    try {
+      await deleteLead(lead.id);
+      onChanged();
+    } catch (err) {
+      alert(`Could not delete: ${(err as ApiError).error}`);
+    }
   }
 
   async function handleShowConversion(leadId: number) {

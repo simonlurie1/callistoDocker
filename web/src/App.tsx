@@ -4,7 +4,7 @@ import { LeadsTable } from "./components/LeadsTable";
 import { Filters } from "./components/Filters";
 import { ConversionDetail } from "./components/ConversionDetail";
 import { fetchLeads } from "./api";
-import type { ConversionEvent, Lead } from "./types";
+import type { ApiError, ConversionEvent, Lead } from "./types";
 
 export default function App() {
   const [leads, setLeads] = useState<Lead[]>([]);
@@ -12,10 +12,16 @@ export default function App() {
   const [source, setSource] = useState("");
   const [appliedFilters, setAppliedFilters] = useState({ status: "", source: "" });
   const [selectedEvent, setSelectedEvent] = useState<ConversionEvent | null>(null);
+  const [loadError, setLoadError] = useState("");
 
   const reload = useCallback(async () => {
-    const data = await fetchLeads(appliedFilters);
-    setLeads(data);
+    try {
+      setLeads(await fetchLeads(appliedFilters));
+      setLoadError("");
+    } catch (err) {
+      const apiErr = err as ApiError;
+      setLoadError(apiErr.error ?? "could not load leads (is the api running?)");
+    }
   }, [appliedFilters]);
 
   useEffect(() => {
@@ -47,6 +53,7 @@ export default function App() {
             }}
             onRefresh={reload}
           />
+          {loadError && <p className="error">{loadError}</p>}
           <LeadsTable leads={leads} onChanged={reload} onShowConversion={setSelectedEvent} />
         </section>
 

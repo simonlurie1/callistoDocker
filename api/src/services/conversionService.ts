@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { prisma } from "../lib/prisma";
 import { ping as trackerPing, postConversion, ConversionPayload } from "../lib/trackerClient";
 import { nextRetryDelaySeconds } from "../lib/backoff";
+import { Prisma } from "@prisma/client";
 import type { ConversionEvent, Lead } from "@prisma/client";
 
 function buildPayload(lead: Lead, eventId: string): ConversionPayload {
@@ -33,15 +34,25 @@ async function getOrCreateEvent(lead: Lead): Promise<ConversionEvent> {
 
   const eventId = `conv_${lead.id}_${randomUUID().slice(0, 8)}`;
   const payload = buildPayload(lead, eventId);
-  return prisma.conversionEvent.create({
-    data: {
-      eventId,
-      leadId: lead.id,
-      status: "pending",
-      attempts: 0,
-      requestBody: JSON.stringify(payload),
-    },
-  });
+  try {
+    return await prisma.conversionEvent.create({
+      data: {
+        eventId,
+        leadId: lead.id,
+        status: "pending",
+        attempts: 0,
+        requestBody: JSON.stringify(payload),
+      },
+    });
+  } catch (err) {
+    // Two concurrent converts of the same lead (double-click) can both miss
+    // the findUnique above; the unique lead_id lets only one insert win, so
+    // the loser just uses the winner's row (and its event_id).
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      return prisma.conversionEvent.findUniqueOrThrow({ where: { leadId: lead.id } });
+    }
+    throw err;
+  }
 }
 
 /**
@@ -55,17 +66,21 @@ export async function attemptSend(event: ConversionEvent): Promise<ConversionEve
 
   const isNetworkFailure = result.httpStatus === 0;
   const isServerError = result.httpStatus >= 500;
+  // 429 (the tracker's 30 req/min limit) and 408 are transient, like a 5xx.
+  const isTransientClientError = result.httpStatus === 429 || result.httpStatus === 408;
   const bodyObj = result.body as { duplicate?: boolean } | null;
   const isSuccess =
     result.httpStatus === 201 || (result.httpStatus === 200 && bodyObj?.duplicate === true);
 
-  const retryable = isNetworkFailure || isServerError;
+  const retryable = isNetworkFailure || isServerError || isTransientClientError;
 
   return prisma.conversionEvent.update({
     where: { id: event.id },
     data: {
       status: isSuccess ? "sent" : "failed",
-      attempts,
+      // Atomic increment: concurrent sends of the same event (double-click,
+      // or a manual convert racing the retry command) must not lose a count.
+      attempts: { increment: 1 },
       responseStatus: result.httpStatus,
       responseBody:
         typeof result.body === "string" ? result.body : JSON.stringify(result.body ?? null),

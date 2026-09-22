@@ -1,5 +1,9 @@
 const BASE_URL = process.env.TRACKER_BASE_URL ?? "https://bipro2interface.sseku.com/api/candidate-tracker";
 const API_KEY = process.env.TRACKER_API_KEY;
+// Without a timeout a hung tracker would hang our request (and the retry
+// command) indefinitely. A timeout surfaces as a network failure, which is
+// retryable.
+const TIMEOUT_MS = Number(process.env.TRACKER_TIMEOUT_MS ?? 10_000);
 
 export interface ConversionPayload {
   event_id: string;
@@ -35,6 +39,7 @@ export async function ping(): Promise<TrackerResponse> {
     const res = await fetch(`${BASE_URL}/ping`, {
       method: "GET",
       headers: authHeaders(),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     const body = await safeJson(res);
     return { httpStatus: res.status, body };
@@ -49,6 +54,7 @@ export async function postConversion(payload: ConversionPayload): Promise<Tracke
       method: "POST",
       headers: authHeaders(),
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     const body = await safeJson(res);
     return { httpStatus: res.status, body };

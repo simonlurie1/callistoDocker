@@ -13,20 +13,36 @@ export interface CreateLeadInput {
   currency?: unknown;
 }
 
+// Pragmatic format check (not full RFC 5322): catches what the tracker
+// rejects as "must be a valid email address" before the lead is saved,
+// instead of the conversion failing permanently with a 422 later.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PHONE_RE = /^\+?[0-9\s\-()]{6,32}$/;
+
 function normalizeString(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
   const trimmed = String(value).trim();
   return trimmed.length === 0 ? undefined : trimmed;
 }
 
+/** undefined/null/"" mean "no amount"; anything else must parse as a number
+ * (NaN is returned for booleans, objects, "12abc", and caught by validation). */
+function toAmount(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "number" && typeof value !== "string") return NaN;
+  return Number(value);
+}
+
 /** Validation shared by create and (non-status) update. Does not enforce the
  * conversion-only rules (contact + amount) — those are checked separately in
  * changeStatus, since a lead is allowed to exist without them until it's
- * converted. */
+ * converted. Length limits mirror the DB columns so oversized input is a 422,
+ * not a database error. */
 function validateContactAndCurrency(input: {
   name?: string;
   email?: string;
   phone?: string;
+  source?: string;
   amount?: number;
   currency?: string;
 }) {
@@ -34,15 +50,26 @@ function validateContactAndCurrency(input: {
 
   if (!input.name) {
     errors.name = ["name is required"];
+  } else if (input.name.length > 255) {
+    errors.name = ["name must be at most 255 characters"];
   }
   if (!input.email && !input.phone) {
     errors.contact = ["email is required if phone is empty, and vice versa"];
   }
+  if (input.email && (input.email.length > 255 || !EMAIL_RE.test(input.email))) {
+    errors.email = ["email must be a valid email address"];
+  }
+  if (input.phone && !PHONE_RE.test(input.phone)) {
+    errors.phone = ["phone must be 6-32 characters: digits, spaces, dashes, parentheses, optional leading +"];
+  }
+  if (input.source && input.source.length > 100) {
+    errors.source = ["source must be at most 100 characters"];
+  }
   if (input.currency && !isSupportedCurrency(input.currency)) {
     errors.currency = [`currency must be one of: ${SUPPORTED_CURRENCIES.join(", ")}`];
   }
-  if (input.amount !== undefined && (typeof input.amount !== "number" || Number.isNaN(input.amount))) {
-    errors.amount = ["amount must be a number"];
+  if (input.amount !== undefined && (!Number.isFinite(input.amount) || input.amount <= 0)) {
+    errors.amount = ["amount must be a number greater than 0"];
   }
   // amount and currency travel together: a bare amount with no currency (or
   // vice versa) is accepted at creation time (both are only *required* once
@@ -82,10 +109,9 @@ export async function createLead(input: CreateLeadInput): Promise<Lead> {
   const phone = normalizeString(input.phone);
   const source = normalizeString(input.source);
   const currency = normalizeString(input.currency)?.toUpperCase();
-  const amount =
-    input.amount === undefined || input.amount === null ? undefined : Number(input.amount);
+  const amount = toAmount(input.amount);
 
-  validateContactAndCurrency({ name, email, phone, amount, currency });
+  validateContactAndCurrency({ name, email, phone, source, amount, currency });
 
   return prisma.lead.create({
     data: { name: name!, email, phone, source, amount, currency, status: "new" },
@@ -103,7 +129,12 @@ export interface UpdateLeadInput {
 
 /** Generic field update. Deliberately does NOT accept `status` — status
  * changes are a dedicated action (changeStatus) with their own rules, per
- * the assignment's "not a generic update any field" requirement. */
+ * the assignment's "not a generic update any field" requirement.
+ *
+ * An omitted field keeps its value; a field sent as null or "" is cleared.
+ * The locals below hold the merged final state, which is validated as a
+ * whole and then written with `?? null`, because Prisma treats `undefined`
+ * as "leave unchanged" and would silently drop the clear. */
 export async function updateLead(id: number, input: UpdateLeadInput): Promise<Lead> {
   const existing = await getLead(id);
 
@@ -115,18 +146,20 @@ export async function updateLead(id: number, input: UpdateLeadInput): Promise<Le
     input.currency === undefined
       ? existing.currency ?? undefined
       : normalizeString(input.currency)?.toUpperCase();
-  const amount =
-    input.amount === undefined
-      ? existing.amount ?? undefined
-      : input.amount === null
-        ? undefined
-        : Number(input.amount);
+  const amount = input.amount === undefined ? existing.amount ?? undefined : toAmount(input.amount);
 
-  validateContactAndCurrency({ name, email, phone, amount, currency });
+  validateContactAndCurrency({ name, email, phone, source, amount, currency });
 
   return prisma.lead.update({
     where: { id },
-    data: { name: name!, email, phone, source, amount, currency },
+    data: {
+      name: name!,
+      email: email ?? null,
+      phone: phone ?? null,
+      source: source ?? null,
+      amount: amount ?? null,
+      currency: currency ?? null,
+    },
   });
 }
 

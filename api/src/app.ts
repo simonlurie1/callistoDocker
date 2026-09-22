@@ -22,6 +22,9 @@ export function createApp() {
   });
 
   const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
+    if ((err as { type?: string }).type === "entity.parse.failed") {
+      return res.status(400).json({ error: "invalid_json", message: "request body is not valid JSON" });
+    }
     if (err instanceof HttpError) {
       const payload: Record<string, unknown> = { error: err.message };
       if (err.details) payload.errors = err.details;

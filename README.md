@@ -162,6 +162,21 @@ Where the tracker doc was silent, per "document the assumption":
 7. **A lead with a conversion event can't be deleted (409).** Deleting it
    would erase the delivery audit trail.
 
+## Verifying it works
+
+With the stack up, run the end-to-end check (Node 18+, no dependencies):
+
+```bash
+node scripts/e2e.mjs
+```
+
+It runs 57 checks through nginx against the real tracker and exits
+non-zero on any failure: validation, CRUD (including clearing fields), the
+status rules, suggested tests #1–#3, `event_id` reuse, and a concurrent
+double-convert. Every run creates a few leads and sends a few conversions,
+well under the rate limit. The 5xx → retry path needs the mock tracker; see
+[Testing retries with the mock tracker](#testing-retries-with-the-mock-tracker).
+
 ## Reproducing the suggested test sequence
 
 **Through the UI** (http://localhost:8080): create a lead with an email,
@@ -246,6 +261,7 @@ api/
 web/
   src/                 React app (components/, api.ts, types.ts)
   nginx.conf           static files + reverse proxy (re-resolves "api" via Docker DNS)
+scripts/e2e.mjs       end-to-end check of the running stack
 docker-compose.yml
 postman/
 ```

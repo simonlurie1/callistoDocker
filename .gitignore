@@ -6,3 +6,5 @@ build/
 mysql-data/
 .DS_Store
 CANDIDATE_ASSIGNMENT.pdf
+.idea/
+.vscode/

@@ -1,6 +1,5 @@
 import "dotenv/config";
-import { prisma } from "../lib/prisma";
-import { attemptSend } from "../services/conversionService";
+import { createContainer } from "../container";
 
 // Picks up any conversion events that still need work:
 //  - status = pending, never attempted at all (e.g. the process crashed
@@ -13,16 +12,10 @@ import { attemptSend } from "../services/conversionService";
 // or by hand:
 //   npm run process-conversions        (locally)
 //   docker compose exec api npm run process-conversions   (in Docker)
-async function main() {
-  const now = new Date();
-  const candidates = await prisma.conversionEvent.findMany({
-    where: { status: { in: ["pending", "failed"] } },
-  });
+const { conversionService, close } = createContainer();
 
-  const due = candidates.filter((event) => {
-    if (event.status === "pending") return true;
-    return event.nextRetryAt !== null && event.nextRetryAt <= now;
-  });
+async function main() {
+  const due = await conversionService.findDueForRetry();
 
   if (due.length === 0) {
     console.log("no conversion events due for retry");
@@ -31,11 +24,11 @@ async function main() {
 
   console.log(`retrying ${due.length} conversion event(s)`);
   for (const event of due) {
-    // Stay well under the 30 req/min tracker rate limit when a batch is due.
-    const updated = await attemptSend(event);
+    const updated = await conversionService.attemptSend(event);
     console.log(
       `event ${updated.eventId}: attempt #${updated.attempts} -> status=${updated.status} httpStatus=${updated.responseStatus}`
     );
+    // Stay well under the 30 req/min tracker rate limit when a batch is due.
     await sleep(1000);
   }
 }
@@ -49,6 +42,4 @@ main()
     console.error(err);
     process.exitCode = 1;
   })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+  .finally(close);

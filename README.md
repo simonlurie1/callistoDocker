@@ -258,8 +258,12 @@ cd ../web && npm install && npm run dev     # :5173, Vite proxies API paths to :
 db/init.sql            creates the tables (run by MySQL on first start)
 api/
   prisma/schema.prisma describes the same tables for Prisma's typed client (keep in sync with init.sql)
-  src/routes/          HTTP layer only (no tracker calls here)
-  src/services/        leadService (rules), conversionService (outbox + send)
+  src/routes/          HTTP layer only (no tracker calls, no DB access)
+  src/services/        LeadService (rules), ConversionService (outbox + send); depend only on repository interfaces
+  src/repositories/    LeadRepository, ConversionEventRepository interfaces
+  src/repositories/prisma/  Prisma implementations — the only code that imports @prisma/client
+  src/domain/models.ts Lead / ConversionEvent types used everywhere else
+  src/container.ts     composition root: wires the Prisma repositories into the services
   src/lib/             trackerClient (the only code that touches the API key), backoff, constants
   src/jobs/            process-conversions retry command
   src/dev/             mock tracker

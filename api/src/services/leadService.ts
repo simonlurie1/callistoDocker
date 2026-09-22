@@ -1,8 +1,8 @@
-import { prisma } from "../lib/prisma";
-import { isLeadStatus, isSupportedCurrency, LeadStatus, SUPPORTED_CURRENCIES } from "../lib/constants";
+import { isLeadStatus, isSupportedCurrency, SUPPORTED_CURRENCIES } from "../lib/constants";
 import { HttpError, NotFoundError, ValidationError } from "../lib/errors";
-import { dispatchConversionForLead } from "./conversionService";
-import type { Lead } from "@prisma/client";
+import type { ConversionEvent, Lead } from "../domain/models";
+import type { LeadFilter, LeadRepository } from "../repositories/LeadRepository";
+import type { ConversionService } from "./conversionService";
 
 export interface CreateLeadInput {
   name?: unknown;
@@ -11,6 +11,13 @@ export interface CreateLeadInput {
   source?: unknown;
   amount?: unknown;
   currency?: unknown;
+}
+
+export type UpdateLeadInput = CreateLeadInput;
+
+export interface ChangeStatusResult {
+  lead: Lead;
+  conversionEvent?: ConversionEvent;
 }
 
 // Pragmatic format check (not full RFC 5322): catches what the tracker
@@ -84,130 +91,123 @@ function validateContactAndCurrency(input: {
   }
 }
 
-export async function listLeads(filter: { status?: string; source?: string }) {
-  const where: { status?: string; source?: string } = {};
-  if (filter.status) {
-    if (!isLeadStatus(filter.status)) {
-      throw new ValidationError("validation_error", { status: [`unknown status: ${filter.status}`] });
+export class LeadService {
+  constructor(
+    private readonly leads: LeadRepository,
+    private readonly conversions: ConversionService
+  ) {}
+
+  async listLeads(filter: { status?: string; source?: string }): Promise<Lead[]> {
+    const where: LeadFilter = {};
+    if (filter.status) {
+      if (!isLeadStatus(filter.status)) {
+        throw new ValidationError("validation_error", { status: [`unknown status: ${filter.status}`] });
+      }
+      where.status = filter.status;
     }
-    where.status = filter.status;
+    if (filter.source) where.source = filter.source;
+
+    return this.leads.findMany(where);
   }
-  if (filter.source) where.source = filter.source;
 
-  return prisma.lead.findMany({ where, orderBy: { createdAt: "desc" } });
-}
+  async getLead(id: number): Promise<Lead> {
+    const lead = await this.leads.findById(id);
+    if (!lead) throw new NotFoundError(`lead ${id} not found`);
+    return lead;
+  }
 
-export async function getLead(id: number): Promise<Lead> {
-  const lead = await prisma.lead.findUnique({ where: { id } });
-  if (!lead) throw new NotFoundError(`lead ${id} not found`);
-  return lead;
-}
+  async createLead(input: CreateLeadInput): Promise<Lead> {
+    const name = normalizeString(input.name);
+    const email = normalizeString(input.email);
+    const phone = normalizeString(input.phone);
+    const source = normalizeString(input.source);
+    const currency = normalizeString(input.currency)?.toUpperCase();
+    const amount = toAmount(input.amount);
 
-export async function createLead(input: CreateLeadInput): Promise<Lead> {
-  const name = normalizeString(input.name);
-  const email = normalizeString(input.email);
-  const phone = normalizeString(input.phone);
-  const source = normalizeString(input.source);
-  const currency = normalizeString(input.currency)?.toUpperCase();
-  const amount = toAmount(input.amount);
+    validateContactAndCurrency({ name, email, phone, source, amount, currency });
 
-  validateContactAndCurrency({ name, email, phone, source, amount, currency });
-
-  return prisma.lead.create({
-    data: { name: name!, email, phone, source, amount, currency, status: "new" },
-  });
-}
-
-export interface UpdateLeadInput {
-  name?: unknown;
-  email?: unknown;
-  phone?: unknown;
-  source?: unknown;
-  amount?: unknown;
-  currency?: unknown;
-}
-
-/** Generic field update. Deliberately does NOT accept `status` — status
- * changes are a dedicated action (changeStatus) with their own rules, per
- * the assignment's "not a generic update any field" requirement.
- *
- * An omitted field keeps its value; a field sent as null or "" is cleared.
- * The locals below hold the merged final state, which is validated as a
- * whole and then written with `?? null`, because Prisma treats `undefined`
- * as "leave unchanged" and would silently drop the clear. */
-export async function updateLead(id: number, input: UpdateLeadInput): Promise<Lead> {
-  const existing = await getLead(id);
-
-  const name = input.name === undefined ? existing.name : normalizeString(input.name);
-  const email = input.email === undefined ? existing.email ?? undefined : normalizeString(input.email);
-  const phone = input.phone === undefined ? existing.phone ?? undefined : normalizeString(input.phone);
-  const source = input.source === undefined ? existing.source ?? undefined : normalizeString(input.source);
-  const currency =
-    input.currency === undefined
-      ? existing.currency ?? undefined
-      : normalizeString(input.currency)?.toUpperCase();
-  const amount = input.amount === undefined ? existing.amount ?? undefined : toAmount(input.amount);
-
-  validateContactAndCurrency({ name, email, phone, source, amount, currency });
-
-  return prisma.lead.update({
-    where: { id },
-    data: {
+    return this.leads.create({
       name: name!,
       email: email ?? null,
       phone: phone ?? null,
       source: source ?? null,
       amount: amount ?? null,
       currency: currency ?? null,
-    },
-  });
-}
-
-export async function deleteLead(id: number): Promise<void> {
-  await getLead(id);
-  const event = await prisma.conversionEvent.findUnique({ where: { leadId: id } });
-  if (event) {
-    throw new HttpError(409, "cannot delete a lead that has a conversion event (it would erase the delivery audit trail)");
-  }
-  await prisma.lead.delete({ where: { id } });
-}
-
-export interface ChangeStatusResult {
-  lead: Lead;
-  conversionEvent?: Awaited<ReturnType<typeof dispatchConversionForLead>>;
-}
-
-export async function changeStatus(id: number, newStatus: unknown): Promise<ChangeStatusResult> {
-  if (!isLeadStatus(newStatus)) {
-    throw new ValidationError("validation_error", {
-      status: [`status must be one of: new, contacted, qualified, converted, lost`],
     });
   }
 
-  const lead = await getLead(id);
+  /** Generic field update. Deliberately does NOT accept `status` — status
+   * changes are a dedicated action (changeStatus) with their own rules, per
+   * the assignment's "not a generic update any field" requirement.
+   *
+   * An omitted field keeps its value; a field sent as null or "" is cleared.
+   * The locals below hold the merged final state, which is validated as a
+   * whole and then written in full. */
+  async updateLead(id: number, input: UpdateLeadInput): Promise<Lead> {
+    const existing = await this.getLead(id);
 
-  if (newStatus === "converted") {
-    if (lead.status === "lost") {
-      throw new HttpError(409, "cannot convert a lost lead");
+    const name = input.name === undefined ? existing.name : normalizeString(input.name);
+    const email = input.email === undefined ? existing.email ?? undefined : normalizeString(input.email);
+    const phone = input.phone === undefined ? existing.phone ?? undefined : normalizeString(input.phone);
+    const source = input.source === undefined ? existing.source ?? undefined : normalizeString(input.source);
+    const currency =
+      input.currency === undefined
+        ? existing.currency ?? undefined
+        : normalizeString(input.currency)?.toUpperCase();
+    const amount = input.amount === undefined ? existing.amount ?? undefined : toAmount(input.amount);
+
+    validateContactAndCurrency({ name, email, phone, source, amount, currency });
+
+    return this.leads.update(id, {
+      name: name!,
+      email: email ?? null,
+      phone: phone ?? null,
+      source: source ?? null,
+      amount: amount ?? null,
+      currency: currency ?? null,
+    });
+  }
+
+  async deleteLead(id: number): Promise<void> {
+    await this.getLead(id);
+    if (await this.conversions.getEventForLead(id)) {
+      throw new HttpError(409, "cannot delete a lead that has a conversion event (it would erase the delivery audit trail)");
     }
-    const hasContact = Boolean(lead.email || lead.phone);
-    const hasAmount = lead.amount !== null && lead.amount !== undefined;
-    const hasCurrency = Boolean(lead.currency);
-    if (!hasContact || !hasAmount || !hasCurrency) {
-      throw new ValidationError("cannot convert lead: missing required fields", {
-        contact: hasContact ? undefined : ["lead needs an email or phone before it can convert"],
-        amount: hasAmount ? undefined : ["amount is required before conversion"],
-        currency: hasCurrency ? undefined : ["currency is required before conversion"],
+    await this.leads.delete(id);
+  }
+
+  async changeStatus(id: number, newStatus: unknown): Promise<ChangeStatusResult> {
+    if (!isLeadStatus(newStatus)) {
+      throw new ValidationError("validation_error", {
+        status: [`status must be one of: new, contacted, qualified, converted, lost`],
       });
     }
+
+    const lead = await this.getLead(id);
+
+    if (newStatus === "converted") {
+      if (lead.status === "lost") {
+        throw new HttpError(409, "cannot convert a lost lead");
+      }
+      const hasContact = Boolean(lead.email || lead.phone);
+      const hasAmount = lead.amount !== null;
+      const hasCurrency = Boolean(lead.currency);
+      if (!hasContact || !hasAmount || !hasCurrency) {
+        throw new ValidationError("cannot convert lead: missing required fields", {
+          contact: hasContact ? undefined : ["lead needs an email or phone before it can convert"],
+          amount: hasAmount ? undefined : ["amount is required before conversion"],
+          currency: hasCurrency ? undefined : ["currency is required before conversion"],
+        });
+      }
+    }
+
+    const updated = await this.leads.updateStatus(id, newStatus);
+
+    if (newStatus === "converted") {
+      const conversionEvent = await this.conversions.dispatchForLead(updated);
+      return { lead: updated, conversionEvent };
+    }
+
+    return { lead: updated };
   }
-
-  const updated = await prisma.lead.update({ where: { id }, data: { status: newStatus as LeadStatus } });
-
-  if (newStatus === "converted") {
-    const conversionEvent = await dispatchConversionForLead(updated);
-    return { lead: updated, conversionEvent };
-  }
-
-  return { lead: updated };
 }

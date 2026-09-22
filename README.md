@@ -39,8 +39,13 @@ docker compose up -d --build
 - UI: **http://localhost:8080**
 - API directly: http://localhost:3000 (the same API nginx proxies to)
 
-On startup, the `api` container runs `prisma migrate deploy` until MySQL
-accepts connections, then starts the server. No manual DB setup is needed.
+No manual DB setup is needed. On the first start, MySQL runs
+[`db/init.sql`](db/init.sql), which creates the tables. The `api` container
+waits until MySQL is healthy before starting.
+
+`init.sql` only runs when the database volume is empty. After changing it,
+run `docker compose down -v` (**this deletes all data**) and then `up` again,
+so it runs on a fresh database.
 
 ### Environment variables (`.env`, git-ignored)
 
@@ -240,24 +245,24 @@ docker compose up -d --force-recreate --no-deps api
 ## Local development without Docker
 
 ```bash
-docker compose up -d db                     # just MySQL
+docker compose up -d db                     # just MySQL (creates the tables on first start)
 cd api && npm install
 # api/.env: DATABASE_URL=mysql://callisto:callisto_dev_password@localhost:3306/callisto + TRACKER_* vars
-npx prisma migrate deploy && npm run dev    # :3000
+npm run dev                                 # :3000
 cd ../web && npm install && npm run dev     # :5173, Vite proxies API paths to :3000
 ```
 
 ## Project layout
 
 ```
+db/init.sql            creates the tables (run by MySQL on first start)
 api/
-  prisma/schema.prisma, prisma/migrations/    MySQL schema + migration
+  prisma/schema.prisma describes the same tables for Prisma's typed client (keep in sync with init.sql)
   src/routes/          HTTP layer only (no tracker calls here)
   src/services/        leadService (rules), conversionService (outbox + send)
   src/lib/             trackerClient (the only code that touches the API key), backoff, constants
   src/jobs/            process-conversions retry command
   src/dev/             mock tracker
-  entrypoint.sh        wait for DB → migrate → start
 web/
   src/                 React app (components/, api.ts, types.ts)
   nginx.conf           static files + reverse proxy (re-resolves "api" via Docker DNS)

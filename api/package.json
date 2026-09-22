@@ -8,8 +8,6 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev",
-    "prisma:deploy": "prisma migrate deploy",
     "process-conversions": "tsx src/jobs/processConversionEvents.ts",
     "mock-tracker": "tsx watch src/dev/mockTracker.ts"
   },

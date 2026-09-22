@@ -11,8 +11,13 @@ services:
       - "${MYSQL_PORT:-3306}:3306"
     volumes:
       - mysql-data:/var/lib/mysql
+      # Runs once, only when mysql-data is empty (first start / after `down -v`).
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      # 127.0.0.1 (TCP), not localhost (socket): while init.sql runs, MySQL uses
+      # a temporary server with networking off, so a socket ping would report
+      # healthy before the tables exist and the api could start too early.
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
       interval: 5s
       timeout: 5s
       retries: 20

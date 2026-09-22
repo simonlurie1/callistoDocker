@@ -1,3 +1,12 @@
+-- Creates the schema. The MySQL image runs every file in
+-- /docker-entrypoint-initdb.d (docker-compose.yml mounts this file there)
+-- ONLY when the database volume is empty, i.e. on the very first start.
+-- Changing this file later does not touch an existing database: run
+-- `docker compose down -v` to wipe it and let this script run again.
+--
+-- Keep in sync with api/prisma/schema.prisma, which describes these same
+-- tables so Prisma can generate the typed client the API queries with.
+
 -- CreateTable
 CREATE TABLE `leads` (
     `id` INTEGER NOT NULL AUTO_INCREMENT,

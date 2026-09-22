@@ -1,3 +1,8 @@
+// This file does NOT create the tables — db/init.sql does, when MySQL
+// starts with an empty volume. This only describes them so `prisma
+// generate` can build the typed client the API queries with. Keep the two
+// in sync when changing the schema.
+
 generator client {
   provider = "prisma-client-js"
 }

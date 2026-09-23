@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Callisto Mini CRM + Conversion Tracker",
-    "description": "CRM API (through nginx on :8080) plus, in the last folder, optional direct calls to the tracker. Run folders top to bottom (converting only records the event; the worker posts it on its 10-minute schedule, so run `docker compose exec api npm run process-conversions` before each \"once the worker posted it\" request, or wait for the tick); ids from earlier requests are captured into collection variables.",
+    "description": "CRM API (through nginx on :8080) plus, in the last folder, optional direct calls to the tracker. Run folders top to bottom (converting only records the event; the worker posts it within ~5 seconds, so wait a moment before each \"once the worker posted it\" request, or run `docker compose exec api npm run process-conversions` to post immediately); ids from earlier requests are captured into collection variables.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -361,7 +361,7 @@
           "request": {
             "method": "GET",
             "url": "{{base_url}}/leads/{{lead_id}}/conversion-event",
-            "description": "Run `docker compose exec api npm run process-conversions` first (or wait for the worker's 10-minute tick)."
+            "description": "Wait ~5 seconds for the worker to post it first (or run `docker compose exec api npm run process-conversions`)."
           }
         },
         {
@@ -411,7 +411,7 @@
           "request": {
             "method": "GET",
             "url": "{{base_url}}/leads/{{lead_id}}/conversion-event",
-            "description": "Run `docker compose exec api npm run process-conversions` first (or wait for the worker's 10-minute tick)."
+            "description": "Wait ~5 seconds for the worker to post it first (or run `docker compose exec api npm run process-conversions`)."
           }
         }
       ]

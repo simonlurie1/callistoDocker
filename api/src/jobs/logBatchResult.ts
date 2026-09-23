@@ -4,8 +4,10 @@ import type { BatchResult } from "../services/conversionBatchService";
 
 /** Logs a batch pass's result — shared by the scheduled worker and the
  * one-off `process-conversions` command, so both are logged identically.
- * Runs inside the pass's logContext, so every line carries its passId. */
-export function logBatchResult(result: BatchResult): void {
+ * Runs inside the pass's logContext, so every line carries its passId.
+ * `idleLevel` is the level for a pass that found nothing to do: the worker
+ * passes "debug", since it runs every few seconds. */
+export function logBatchResult(result: BatchResult, idleLevel: "debug" | "info" = "info"): void {
   for (const leadId of result.reconciledLeadIds) {
     logger.warn(`lead ${leadId} was "converted" with no conversion event — created the missing pending event`, {
       leadId,
@@ -45,9 +47,10 @@ export function logBatchResult(result: BatchResult): void {
     errors: result.errors.length,
     reconciled: result.reconciledLeadIds.length,
   };
+  const idle = result.found === 0 && result.reconciledLeadIds.length === 0;
   logger.log(
-    result.errors.length + result.reconcileErrors.length > 0 ? "warn" : "info",
-    result.found === 0 && result.reconciledLeadIds.length === 0
+    result.errors.length + result.reconcileErrors.length > 0 ? "warn" : idle ? idleLevel : "info",
+    idle
       ? "batch pass finished: no conversion events need posting"
       : `batch pass finished: ${summary.attempted} attempted (${summary.sent} sent, ${summary.failed} failed), ` +
           `${summary.errors} errored, ${summary.skippedClaimedElsewhere} claimed by another worker`,

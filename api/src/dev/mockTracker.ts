@@ -14,7 +14,7 @@ const MOCK_API_KEY = process.env.MOCK_TRACKER_API_KEY ?? "dev-mock-key";
 // How POST /conversions misbehaves, to exercise each failure path:
 //   normal       - documented behavior (201, then 200 duplicate:true)
 //   server_error - always 500
-//   rate_limited - always 429
+//   rate_limited - always 429, with Retry-After: 30
 //   garbled_ok   - 200 with an HTML body instead of the documented JSON
 //   hang         - never responds (the caller's timeout must fire)
 //   slow_first   - the first request for each event_id is held for
@@ -74,6 +74,8 @@ app.post("/api/candidate-tracker/conversions", async (req, res) => {
     });
   }
   if (BEHAVIOR === "rate_limited") {
+    // Like a real rate limiter: says when to come back; the app honors it.
+    res.set("Retry-After", "30");
     return res.status(429).json({ ok: false, error: "rate_limited", message: "Too many requests." });
   }
   if (BEHAVIOR === "garbled_ok") {

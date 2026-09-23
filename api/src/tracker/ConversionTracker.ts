@@ -17,6 +17,9 @@ export interface DeliveryResult {
   responseBody: string | null;
   /** Why no response was received (network error, timeout), else null. */
   error: string | null;
+  /** How long the tracker asked us to wait before retrying (its Retry-After
+   * header, e.g. on a 429), else null. */
+  retryAfterSeconds: number | null;
 }
 
 export interface PingResult {

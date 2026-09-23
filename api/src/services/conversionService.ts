@@ -2,7 +2,7 @@ import { randomUUID } from "crypto";
 import type { ConversionEvent, ConversionPayload, Lead } from "../domain/models";
 import type { ConversionEventRepository } from "../repositories/ConversionEventRepository";
 import type { ConversionTracker } from "../tracker/ConversionTracker";
-import { nextRetryDelaySeconds } from "../lib/backoff";
+import { MAX_RETRY_DELAY_SECONDS, nextRetryDelaySeconds } from "../lib/backoff";
 
 // The event_id is `conv_{lead_id}_{random}`, generated once per lead and
 // reused for every post of that conversion. A bare `conv_{lead_id}` collides
@@ -20,6 +20,14 @@ function buildPayload(lead: Lead, eventId: string): ConversionPayload {
     currency: lead.currency ?? undefined,
     occurred_at: new Date().toISOString(),
   };
+}
+
+/** The tracker's Retry-After wins when it sent one (it knows when its rate
+ * limit resets), capped so a bogus value can't park the event for days;
+ * otherwise the exponential backoff schedule. */
+function retryDelaySeconds(retryAfterSeconds: number | null, attemptsSoFar: number): number {
+  if (retryAfterSeconds !== null) return Math.min(retryAfterSeconds, MAX_RETRY_DELAY_SECONDS);
+  return nextRetryDelaySeconds(attemptsSoFar);
 }
 
 export class ConversionService {
@@ -75,9 +83,7 @@ export class ConversionService {
       responseBody: result.responseBody,
       lastError: result.error,
       attemptedAt: new Date(),
-      nextRetryAt: retry
-        ? new Date(Date.now() + nextRetryDelaySeconds(event.attempts + 1) * 1000)
-        : null,
+      nextRetryAt: retry ? new Date(Date.now() + retryDelaySeconds(result.retryAfterSeconds, event.attempts + 1) * 1000) : null,
     });
   }
 

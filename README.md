@@ -14,7 +14,7 @@ lead created → status changed to converted → outbound conversion request
 | `db` | Leads + outbound conversion events | MySQL 8.4 |
 | `api` | REST API and business rules; records conversions (never calls the tracker to post them) | Node.js 20, TypeScript, Express, Prisma, winston |
 | `web` | UI, plus a same-origin reverse proxy to the API | React 18 + Vite, served by nginx |
-| `worker` | Scheduled batch service (node-cron, every 10 minutes): claims and posts pending conversions to the tracker | Node.js 20 (same image as `api`) |
+| `worker` | Scheduled batch service (node-cron, every 5 seconds): claims and posts pending conversions to the tracker, retrying failures with backoff | Node.js 20 (same image as `api`) |
 | `mock-tracker` *(optional, `mock` profile)* | Local stand-in for the tracker that can simulate each failure mode | Express |
 
 ```
@@ -63,7 +63,7 @@ Optional tuning (defaults shown; all have sensible defaults and can be left unse
 
 | Var | Default | Purpose |
 |---|---|---|
-| `WORKER_CRON_SCHEDULE` | `*/10 * * * *` | When the worker runs a batch pass (standard cron syntax). It also runs one pass at startup |
+| `WORKER_CRON_SCHEDULE` | `*/5 * * * * *` | When the worker runs a batch pass (cron syntax; the optional 6th leading field is seconds). It also runs one pass at startup |
 | `WORKER_BATCH_SIZE` | `10` | Max events claimed per pass |
 | `WORKER_STALE_AFTER_MS` | `300000` (5 min) | How old an `in_process` claim must be before it's treated as abandoned and reclaimed |
 | `TRACKER_TIMEOUT_MS` | `10000` | Per-request timeout for tracker calls |
@@ -114,9 +114,11 @@ relay, not just "persist-then-send-inline":
    response returns immediately with the event still `pending` — no network
    call has happened yet.
 2. **Scan.** The `worker` service (its own container, `api/src/jobs/conversionWorker.ts`)
-   runs a batch pass on a **node-cron** schedule — every 10 minutes by
-   default (`WORKER_CRON_SCHEDULE`) — plus once at startup, so a restarted
-   worker doesn't sit idle for a full interval. Overlapping passes are
+   runs a batch pass on a **node-cron** schedule — every 5 seconds by
+   default (`WORKER_CRON_SCHEDULE`) — plus once at startup, so a new
+   conversion reaches the tracker within seconds. The schedule only decides
+   how often the table is checked; how long a *failed* event waits is
+   decided per event by the backoff in step 5. Overlapping passes are
    prevented (`noOverlap`): if one ever runs past the next tick, that tick is
    skipped. Each pass first repairs any orphaned conversions (see
    [Failure scenarios](#failure-scenarios-during-posting)), then asks the
@@ -139,8 +141,14 @@ relay, not just "persist-then-send-inline":
    (see scenario 10 below).
 5. **Retryable failures** (network error, a 10s timeout, `5xx`, `429`/`408`,
    or a response that doesn't match the documented shapes) go back to
-   `failed` with `next_retry_at` set by exponential backoff (1m → 5m → 15m,
-   capped). A later pass picks them up once due. The two documented
+   `failed` with `next_retry_at` set by exponential backoff — 10s → 30s →
+   2m → 10m → 30m → 1h, then hourly — with ±20% jitter so events that failed
+   together (an outage) don't all retry at the same instant
+   (`api/src/lib/backoff.ts`). Short early steps recover a brief blip in
+   seconds; the 1h cap keeps a long outage from hammering the tracker's
+   30 req/min limit. If the tracker sends a `Retry-After` header (e.g. with a
+   `429`), that delay is used instead, capped at 1h. A later pass picks the
+   event up once due. The two documented
    rejections — `422` (validation) and `401` (bad key) — are **not** retried,
    since resending the same request can't fix them; they stay visible with
    `next_retry_at = null` and are logged as errors needing a human.
@@ -152,9 +160,10 @@ relay, not just "persist-then-send-inline":
    changes, so a genuinely-delivered-but-unmarked event just gets
    `duplicate: true` back.
 
-`duplicate: true` (HTTP 200) counts as success. Since the schedule is every
-10 minutes, a pass can be triggered on demand (a demo, an ops fix) — safe to
-run while the worker is running, since events are claimed before posting:
+`duplicate: true` (HTTP 200) counts as success. A pass can also be triggered
+on demand (a script, an ops fix). It posts only what is already due — it
+doesn't skip a failed event's backoff wait — and is safe to run while the
+worker is running, since events are claimed before posting:
 ```bash
 docker compose exec api npm run process-conversions
 ```
@@ -202,7 +211,7 @@ at the tracker.
 | 1 | Tracker unreachable (DNS, refused, network down) | `failed`, `http = null`, `last_error` set, retried with backoff | `HttpConversionTracker.send` |
 | 2 | Tracker hangs | Aborted after `TRACKER_TIMEOUT_MS` (10s), treated like 1 | `AbortSignal.timeout` |
 | 3 | Tracker returns `5xx` | `failed`, retried with backoff | `classify()` |
-| 4 | Tracker returns `429` (rate limit) / `408` | Same as 3. Posts are also throttled to ~28/min per worker to avoid it | `classify()`, `throttle()` |
+| 4 | Tracker returns `429` (rate limit) / `408` | Same as 3, but a `Retry-After` header, if sent, sets the wait. Posts are also throttled to ~28/min per worker to avoid it | `classify()`, `parseRetryAfter()`, `throttle()` |
 | 5 | Tracker returns `401` (bad/expired key) | `failed`, **not** retried; logged as an error that names `TRACKER_API_KEY`, since it affects every conversion, not one record | `classify()`, `logBatchResult` |
 | 6 | Tracker returns `200` with a body that isn't the documented `duplicate:true` JSON (e.g. an HTML page from a proxy) | Treated as retryable, not as success or as a permanent failure — we can't tell whether it was delivered, and retrying is harmless (`event_id` dedupes) | `classify()` |
 | 7 | Database down when a pass starts | The pass fails and is logged; the worker process keeps running and the next tick retries. No restart needed | `conversionWorker.ts` |
@@ -282,7 +291,7 @@ It runs 63 checks through nginx against the real tracker and exits
 non-zero on any failure: validation, CRUD (including clearing fields), the
 status rules, that converting only records a `pending` event, suggested
 tests #1–#3, `event_id` reuse, and a concurrent double-convert. Rather than
-wait up to 10 minutes for the worker's schedule, it triggers passes itself
+wait for the worker's next tick, it triggers passes itself
 with `docker compose exec api npm run process-conversions` (override with
 `E2E_TRIGGER_PASS`). Every run creates a few leads and sends a few
 conversions, well under the rate limit. The failure paths need the mock
@@ -292,10 +301,9 @@ tracker; see [Testing failures with the mock tracker](#testing-failures-with-the
 
 **Through the UI** (http://localhost:8080): create a lead with an email,
 amount, and currency. Set its status to `converted` — the panel shows
-`status: "pending"` and keeps polling. The worker posts it on its next tick
-(within 10 minutes); to see it now, run
-`docker compose exec api npm run process-conversions` and the panel switches
-to `responseStatus: 201` on its own. Set it to `converted` again and, once
+`status: "pending"` and keeps polling. The worker posts it on its next pass
+(within ~5 seconds) and the panel switches to `responseStatus: 201` on its
+own. Set it to `converted` again and, once
 posted, you get `200` with `"duplicate": true`, same `eventId`.
 
 **Through curl:**
@@ -309,14 +317,14 @@ curl -s -X POST http://localhost:8080/leads -H "Content-Type: application/json" 
 curl -s -X PATCH http://localhost:8080/leads/1/status -H "Content-Type: application/json" \
   -d '{"status":"converted"}'                                     # returns status: "pending"
 
-docker compose exec api npm run process-conversions              # post now instead of waiting for the tick
+sleep 5                                                          # the worker posts it on its next pass
 
 curl -s http://localhost:8080/leads/1/conversion-event             # 2. status: "sent", responseStatus: 201
 
 curl -s -X PATCH http://localhost:8080/leads/1/status -H "Content-Type: application/json" \
   -d '{"status":"converted"}'                                     # re-queues: back to "pending"
 
-docker compose exec api npm run process-conversions
+sleep 5
 curl -s http://localhost:8080/leads/1/conversion-event             # 3. 200 duplicate:true, same event_id
 ```
 
@@ -327,9 +335,9 @@ against the tracker itself are in the Postman collection's last folder.
 **Postman:** import
 [`postman/callisto-crm.postman_collection.json`](postman/callisto-crm.postman_collection.json),
 set `tracker_api_key` if you want the direct-tracker folder, and run the
-folders top to bottom. Before each "once the worker posted it" request, run
-`docker compose exec api npm run process-conversions` (or wait for the
-10-minute tick).
+folders top to bottom. Before each "once the worker posted it" request, wait
+~5 seconds for the worker (or run
+`docker compose exec api npm run process-conversions`).
 
 ## Testing failures with the mock tracker
 
@@ -341,33 +349,35 @@ instead, set with `MOCK_TRACKER_BEHAVIOR`:
 |---|---|
 | `normal` | 201, then 200 `duplicate:true` (as documented) |
 | `server_error` | 500 |
-| `rate_limited` | 429 |
+| `rate_limited` | 429 with `Retry-After: 30` (the retry is scheduled ≈ +30s instead of by the backoff) |
 | `garbled_ok` | 200 with an HTML body instead of the documented JSON |
 | `hang` | never answers (exercises the timeout) |
 | `slow_first` | holds the first request per `event_id` for `MOCK_TRACKER_SLOW_MS` (8s), answers later ones at once (for racing a stale claim) |
 
-Start it, then run a pass pointed at it. Env vars passed to `exec -e`
-override `.env` for that one pass, so nothing else has to be reconfigured:
+Start it and point the `worker` at it. Since the worker posts within
+seconds, it has to be the one talking to the mock — otherwise it would post
+your test conversion to the real tracker first. Variables set on the
+command line override `.env` for the recreated container only:
 
 ```bash
 MOCK_TRACKER_BEHAVIOR=server_error docker compose --profile mock up -d --build mock-tracker
+TRACKER_BASE_URL=http://mock-tracker:4000/api/candidate-tracker TRACKER_API_KEY=dev-mock-key \
+  docker compose up -d --no-deps --force-recreate worker
 
-# convert a lead through the api as usual, then:
-docker compose exec -e TRACKER_BASE_URL=http://mock-tracker:4000/api/candidate-tracker \
-  -e TRACKER_API_KEY=dev-mock-key api npm run process-conversions
-# -> event "failed", http 500, retry scheduled ≈ +60s
+# convert a lead through the UI or the api as usual; within ~5s:
+# -> event "failed", http 500, retry scheduled ≈ +10s (then 30s, 2m, …)
 
-# switch the mock back to normal and run the same pass once the retry is due:
+# switch the mock back to normal; the next due retry succeeds:
 MOCK_TRACKER_BEHAVIOR=normal docker compose --profile mock up -d --force-recreate mock-tracker
-# -> attempt #2, status "sent", http 201, same event_id
+# -> attempt #N, status "sent", http 201, same event_id
 
-docker compose --profile mock rm -sf mock-tracker   # done
+# done: put the worker back on the real tracker (.env) and remove the mock
+docker compose up -d --no-deps --force-recreate worker
+docker compose --profile mock rm -sf mock-tracker
 ```
 
-To point the long-running `worker` at the mock instead, recreate it with the
-same two variables: `TRACKER_BASE_URL=... TRACKER_API_KEY=dev-mock-key docker compose up -d --no-deps --force-recreate worker`
-(and `docker compose up -d --force-recreate --no-deps worker` afterwards to
-go back to `.env`). PowerShell: set the variables with `$env:NAME = "value"` first.
+PowerShell: set the two variables with `$env:NAME = "value"` first, and
+`Remove-Item Env:NAME` before restoring the worker.
 
 ## Local development without Docker
 
@@ -376,7 +386,7 @@ docker compose up -d db                     # just MySQL (creates the tables on 
 cd api && npm install
 # api/.env: DATABASE_URL=mysql://callisto:callisto_dev_password@localhost:3306/callisto + TRACKER_* vars
 LOG_FORMAT=pretty npm run dev               # :3000 — api only; nothing posts conversions without the worker
-LOG_FORMAT=pretty npm run dev:worker        # in another terminal — runs a pass now, then on the cron schedule
+LOG_FORMAT=pretty npm run dev:worker        # in another terminal — runs a pass now, then every 5s
 cd ../web && npm install && npm run dev     # :5173, Vite proxies API paths to :3000
 ```
 

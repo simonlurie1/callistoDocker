@@ -7,8 +7,8 @@
 //
 // Talks to the REAL tracker configured in .env: every run creates a few
 // leads and sends a few conversions (well under the 30 req/min limit).
-// Converting only records the event; the `worker` posts on a schedule
-// (every 10 minutes), so instead of waiting for it this script triggers a
+// Converting only records the event; the `worker` posts it on its next pass
+// (every 5 seconds). To keep each check deterministic this script triggers a
 // batch pass itself — the same `process-conversions` command an operator
 // would run. Override with E2E_TRIGGER_PASS if the stack isn't run through
 // docker compose from this repo.
@@ -55,10 +55,10 @@ function section(title) {
   console.log(`\n== ${title}`);
 }
 
-/** Runs one batch pass now (rather than waiting for the worker's schedule),
- * then returns the lead's event once it has left pending/in_process. A
- * second pass covers the rare case where a worker tick claimed the event at
- * the same moment and is still posting it. */
+/** Runs one batch pass now (rather than waiting for the worker's next tick),
+ * then returns the lead's event once it has left pending/in_process. Further
+ * passes cover the case where the worker (every 5s) claimed the event first
+ * and is still posting it. */
 async function postNowAndGet(leadId) {
   for (let pass = 1; pass <= 3; pass++) {
     execSync(TRIGGER_PASS, { cwd: REPO_ROOT, stdio: "ignore" });

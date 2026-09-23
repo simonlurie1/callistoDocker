@@ -6,15 +6,17 @@ import { errorDetails, logContext, logger, setServiceName } from "../lib/logger"
 import { logBatchResult } from "./logBatchResult";
 
 // Long-running worker: runs a batch pass (repair orphaned conversions, find
-// events that need posting, claim, post) on a cron schedule — every 10
-// minutes by default — plus once at startup. Runs as its own container
+// events that need posting, claim, post) on a cron schedule — every 5
+// seconds by default — plus once at startup. Passes are frequent so a new
+// conversion goes out within seconds; how long a *failed* event waits before
+// its next attempt is set per event by the backoff (next_retry_at), not here. Runs as its own container
 // (`worker` in docker-compose.yml); several replicas can run side by side
 // since claims are atomic. For an immediate pass, run `process-conversions`.
 //   npm run worker        (compiled)   |   npm run dev:worker   (tsx, watch)
 
 setServiceName("worker");
 
-const CRON_SCHEDULE = process.env.WORKER_CRON_SCHEDULE ?? "*/10 * * * *";
+const CRON_SCHEDULE = process.env.WORKER_CRON_SCHEDULE ?? "*/5 * * * * *";
 if (!cron.validate(CRON_SCHEDULE)) {
   logger.error(`invalid WORKER_CRON_SCHEDULE "${CRON_SCHEDULE}"`);
   process.exit(1);
@@ -38,9 +40,10 @@ let inFlight: Promise<void> | null = null;
 function runPass(trigger: "startup" | "schedule"): Promise<void> {
   const passId = randomUUID().slice(0, 8);
   inFlight = logContext.run({ passId }, async () => {
-    logger.info(`batch pass started (${trigger})`);
+    // debug, not info: with a pass every few seconds, idle passes would flood the log.
+    logger.debug(`batch pass started (${trigger})`);
     try {
-      logBatchResult(await conversionBatchService.runOnce(() => shuttingDown));
+      logBatchResult(await conversionBatchService.runOnce(() => shuttingDown), "debug");
     } catch (err) {
       // e.g. the database is down, so even the scan failed. The worker keeps
       // running; the next tick tries again.
@@ -56,7 +59,9 @@ function runPass(trigger: "startup" | "schedule"): Promise<void> {
 // is skipped rather than starting a second concurrent pass.
 const task = cron.createTask(CRON_SCHEDULE, () => runPass("schedule"), { name: "post-conversions", noOverlap: true });
 task.on("execution:overlap", () => {
-  logger.warn("skipped a scheduled pass: the previous one is still running");
+  // Routine with a short schedule: a pass posting several events (throttled
+  // to ~2s apart) outlasts a 5s tick.
+  logger.debug("skipped a scheduled pass: the previous one is still running");
 });
 
 async function shutdown(signal: string): Promise<void> {

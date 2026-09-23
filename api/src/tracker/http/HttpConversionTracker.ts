@@ -44,13 +44,20 @@ export class HttpConversionTracker implements ConversionTracker {
     try {
       exchange = await this.request(log, "POST", "/conversions", payload);
     } catch (err) {
-      return { outcome: "retryable_failure", httpStatus: null, responseBody: null, error: (err as Error).message };
+      return {
+        outcome: "retryable_failure",
+        httpStatus: null,
+        responseBody: null,
+        error: (err as Error).message,
+        retryAfterSeconds: null,
+      };
     }
 
     const outcome = classify(exchange.status, exchange.text);
+    const retryAfterSeconds = outcome === "retryable_failure" ? parseRetryAfter(exchange.headers["retry-after"]) : null;
     const level = outcome === "accepted" || outcome === "duplicate" ? "info" : outcome === "retryable_failure" ? "warn" : "error";
-    log.log(level, `tracker conversion outcome: ${outcome}`, { outcome, status: exchange.status });
-    return { outcome, httpStatus: exchange.status, responseBody: exchange.text, error: null };
+    log.log(level, `tracker conversion outcome: ${outcome}`, { outcome, status: exchange.status, retryAfterSeconds });
+    return { outcome, httpStatus: exchange.status, responseBody: exchange.text, error: null, retryAfterSeconds };
   }
 
   async ping(): Promise<PingResult> {
@@ -126,6 +133,16 @@ function classify(status: number, text: string): DeliveryOutcome {
   // retry gets duplicate:true back (harmless, event_id is idempotent);
   // giving up risks silently losing a conversion that actually went through.
   return "retryable_failure";
+}
+
+/** Retry-After is either delay-seconds ("120") or an HTTP date. Returns null
+ * when absent or unparseable, so the normal backoff applies. */
+function parseRetryAfter(value: string | undefined): number | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) return Number(trimmed);
+  const at = Date.parse(trimmed);
+  return Number.isNaN(at) ? null : Math.max(0, (at - Date.now()) / 1000);
 }
 
 function parseJson(text: string): unknown {

@@ -281,6 +281,26 @@ Where the tracker doc was silent, per "document the assumption":
 
 ## Verifying it works
 
+### Unit tests
+
+No Docker, database or network needed — the services run against in-memory
+repositories and a fake tracker ([Vitest](https://vitest.dev), ~0.5s):
+
+```bash
+cd api && npm install && npm test
+```
+
+73 tests in `api/test/` cover the lead rules (contact always required, no
+converting a `lost` lead, no deleting a lead with a conversion event),
+request parsing, the outbox flow (converting records a `pending` event and
+never calls the tracker), delivery outcomes (`201`/duplicate → `sent`,
+`5xx`/timeout → `failed` + retry, `401`/`422` → no retry), the backoff
+schedule and `Retry-After`, crash recovery of stale `in_process` claims, and
+two workers racing for the same events (each posted exactly once).
+`npm run test:watch` reruns them on save.
+
+### End-to-end check
+
 With the stack up, run the end-to-end check (Node 18+, no dependencies):
 
 ```bash

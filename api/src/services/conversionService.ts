@@ -50,13 +50,26 @@ export class ConversionService {
     });
   }
 
-  /** Posts an event the caller has claimed, and records the outcome on it. */
-  async attemptSend(event: ConversionEvent): Promise<ConversionEvent> {
+  /**
+   * Posts an event the caller has claimed, and records the outcome.
+   * `event` must be a freshly claimed event (non-null `processingStartedAt`)
+   * — only the batch service calls this, always with one it just claimed.
+   *
+   * Returns null if another worker reclaimed the event before the outcome
+   * could be recorded (this worker's claim went stale mid-post, e.g. a slow
+   * tracker response outliving WORKER_STALE_AFTER_MS). The post to the
+   * tracker still happened; the new owner will record its own outcome, so
+   * there is nothing left to do here.
+   */
+  async attemptSend(event: ConversionEvent): Promise<ConversionEvent | null> {
+    if (!event.processingStartedAt) {
+      throw new Error(`attemptSend called on unclaimed event ${event.eventId}`);
+    }
     const result = await this.tracker.send(event.payload);
     const delivered = result.outcome === "accepted" || result.outcome === "duplicate";
     const retry = result.outcome === "retryable_failure";
 
-    return this.events.recordAttempt(event.id, {
+    return this.events.recordAttempt(event.id, event.processingStartedAt, {
       status: delivered ? "sent" : "failed",
       responseStatus: result.httpStatus,
       responseBody: result.responseBody,

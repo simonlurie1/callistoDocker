@@ -87,9 +87,11 @@ export class PrismaConversionEventRepository implements ConversionEventRepositor
     return toConversionEvent(await this.prisma.conversionEvent.findUniqueOrThrow({ where: { id } }));
   }
 
-  async recordAttempt(id: number, attempt: AttemptRecord): Promise<ConversionEvent> {
-    const row = await this.prisma.conversionEvent.update({
-      where: { id },
+  async recordAttempt(id: number, claimedAt: Date, attempt: AttemptRecord): Promise<ConversionEvent | null> {
+    // Fenced by processingStartedAt: only the worker whose claim produced
+    // `claimedAt` can still be the current owner when this runs.
+    const { count } = await this.prisma.conversionEvent.updateMany({
+      where: { id, processingStartedAt: claimedAt },
       data: {
         status: attempt.status,
         attempts: { increment: 1 },
@@ -101,6 +103,7 @@ export class PrismaConversionEventRepository implements ConversionEventRepositor
         processingStartedAt: null,
       },
     });
-    return toConversionEvent(row);
+    if (count === 0) return null;
+    return toConversionEvent(await this.prisma.conversionEvent.findUniqueOrThrow({ where: { id } }));
   }
 }

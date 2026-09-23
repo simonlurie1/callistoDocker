@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import { fetchConversionEvent } from "../api";
 import type { ConversionEvent } from "../types";
 
-const POLL_MS = 1500;
+// The worker posts on a schedule (every 10 minutes by default), so there's
+// no point polling fast; this just picks the result up soon after it lands.
+const POLL_MS = 5000;
 
 function safeParse(value: string | null): unknown {
   if (value === null) return null;
@@ -42,7 +44,12 @@ export function ConversionDetail({ event }: { event: ConversionEvent | null }) {
   return (
     <section className="card">
       <h2>Conversion event detail</h2>
-      {inFlight && <p className="subtitle">Status: {current?.status} — waiting for the worker to post it…</p>}
+      {inFlight && (
+        <p className="subtitle">
+          Status: {current?.status} — recorded; the worker posts pending conversions on its schedule (every 10
+          minutes by default). This panel updates on its own once it's posted.
+        </p>
+      )}
       <pre className="event-detail">
         {current
           ? JSON.stringify(

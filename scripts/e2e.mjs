@@ -7,9 +7,19 @@
 //
 // Talks to the REAL tracker configured in .env: every run creates a few
 // leads and sends a few conversions (well under the 30 req/min limit).
-// Conversions are posted by the `worker` service, which must be running.
+// Converting only records the event; the `worker` posts on a schedule
+// (every 10 minutes), so instead of waiting for it this script triggers a
+// batch pass itself — the same `process-conversions` command an operator
+// would run. Override with E2E_TRIGGER_PASS if the stack isn't run through
+// docker compose from this repo.
+
+import { execSync } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const BASE = (process.argv[2] ?? "http://localhost:8080").replace(/\/$/, "");
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const TRIGGER_PASS = process.env.E2E_TRIGGER_PASS ?? "docker compose exec -T api npm run -s process-conversions";
 const RUN = Date.now();
 let passed = 0;
 let failed = 0;
@@ -45,16 +55,18 @@ function section(title) {
   console.log(`\n== ${title}`);
 }
 
-/** Converting only records the event; the worker posts it within a few
- * seconds. Poll until it leaves pending/in_process. */
-async function waitUntilPosted(leadId, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+/** Runs one batch pass now (rather than waiting for the worker's schedule),
+ * then returns the lead's event once it has left pending/in_process. A
+ * second pass covers the rare case where a worker tick claimed the event at
+ * the same moment and is still posting it. */
+async function postNowAndGet(leadId) {
+  for (let pass = 1; pass <= 3; pass++) {
+    execSync(TRIGGER_PASS, { cwd: REPO_ROOT, stdio: "ignore" });
     const event = (await req("GET", `/leads/${leadId}/conversion-event`)).json?.data;
     if (event && event.status !== "pending" && event.status !== "in_process") return event;
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
-  throw new Error(`lead ${leadId}: conversion still not posted after ${timeoutMs}ms — is the worker running?`);
+  throw new Error(`lead ${leadId}: conversion still not posted after 3 triggered passes`);
 }
 
 async function createLead(fields) {
@@ -158,7 +170,7 @@ async function main() {
   check("event_id is conv_{lead_id}_{hex}", true, new RegExp(`^conv_${id}_[0-9a-f]{8}$`).test(eventId), eventId);
   check("request body persisted before send", eventId, JSON.parse(ev.requestBody).event_id);
 
-  ev = await waitUntilPosted(id);
+  ev = await postNowAndGet(id);
   check("worker posted it: sent (suggested test #2)", "sent", ev.status, ev.responseBody);
   check("tracker responded 201", 201, ev.responseStatus, ev.responseBody);
   check("one attempt", 1, ev.attempts);
@@ -168,7 +180,7 @@ async function main() {
   ev = r.json.conversionEvent;
   check("re-convert re-queues the same event", "pending", ev.status, r.text);
   check("re-convert: same event_id", eventId, ev.eventId);
-  ev = await waitUntilPosted(id);
+  ev = await postNowAndGet(id);
   check("re-post: tracker 200 (suggested test #3)", 200, ev.responseStatus, ev.responseBody);
   check("re-post: duplicate:true", true, JSON.parse(ev.responseBody).duplicate);
   check("re-post: 'sent'", "sent", ev.status);
@@ -189,7 +201,7 @@ async function main() {
   check("concurrent convert B -> 200", 200, b.status, b.text);
   const events = (await req("GET", "/conversion-events")).json.data.filter((e) => e.leadId === dbl);
   check("exactly one event row for the lead", 1, events.length);
-  check("that event gets posted: 'sent'", "sent", (await waitUntilPosted(dbl)).status);
+  check("that event gets posted: 'sent'", "sent", (await postNowAndGet(dbl)).status);
 
   console.log(`\nRESULT: ${passed} passed, ${failed} failed`);
   process.exit(failed === 0 ? 0 : 1);

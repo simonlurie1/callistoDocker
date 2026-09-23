@@ -1,30 +1,25 @@
 import "dotenv/config";
+import { randomUUID } from "crypto";
 import { createContainer } from "../container";
+import { errorDetails, logContext, logger, setServiceName } from "../lib/logger";
+import { logBatchResult } from "./logBatchResult";
 
-// Runs a single batch pass and exits — the same work the worker does each
-// tick, useful for triggering a pass by hand. Safe to run while workers are
-// running: events are claimed before posting.
+// Runs a single batch pass and exits — the same work the scheduled worker
+// does every tick, for triggering a pass on demand instead of waiting for
+// the schedule (a demo, the e2e script, an ops fix). Safe to run while the
+// worker is running: events are claimed before posting.
 //   npm run process-conversions                              (locally)
 //   docker compose exec api npm run process-conversions      (in Docker)
+setServiceName("process-conversions");
 const { conversionBatchService, close } = createContainer();
 
-async function main() {
-  const { found, posted, skipped } = await conversionBatchService.runOnce();
-  if (found === 0) {
-    console.log("no conversion events need posting");
-    return;
-  }
-  for (const event of posted) {
-    console.log(
-      `event ${event.eventId}: attempt #${event.attempts} -> status=${event.status} httpStatus=${event.responseStatus ?? "none"}`
-    );
-  }
-  if (skipped > 0) console.log(`${skipped} event(s) claimed by another worker`);
-}
-
-main()
+logContext
+  .run({ passId: randomUUID().slice(0, 8) }, async () => {
+    logger.info("batch pass started (manual)");
+    logBatchResult(await conversionBatchService.runOnce());
+  })
   .catch((err) => {
-    console.error(err);
+    logger.error("batch pass failed", { error: errorDetails(err) });
     process.exitCode = 1;
   })
   .finally(close);

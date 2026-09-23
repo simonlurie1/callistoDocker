@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Callisto Mini CRM + Conversion Tracker",
-    "description": "CRM API (through nginx on :8080) plus, in the last folder, optional direct calls to the tracker. Run folders top to bottom (the worker service must be running: converting only records the event, and the worker posts it a few seconds later); ids from earlier requests are captured into collection variables.",
+    "description": "CRM API (through nginx on :8080) plus, in the last folder, optional direct calls to the tracker. Run folders top to bottom (converting only records the event; the worker posts it on its 10-minute schedule, so run `docker compose exec api npm run process-conversions` before each \"once the worker posted it\" request, or wait for the tick); ids from earlier requests are captured into collection variables.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -345,17 +345,8 @@
           ]
         },
         {
-          "name": "Conversion event once the worker posted it -> tracker 201",
+          "name": "Conversion event once (after process-conversions) the worker posted it -> tracker 201",
           "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "exec": [
-                  "// the worker posts asynchronously; give it a few seconds",
-                  "setTimeout(() => {}, 6000);"
-                ]
-              }
-            },
             {
               "listen": "test",
               "script": {
@@ -369,7 +360,8 @@
           ],
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/leads/{{lead_id}}/conversion-event"
+            "url": "{{base_url}}/leads/{{lead_id}}/conversion-event",
+            "description": "Run `docker compose exec api npm run process-conversions` first (or wait for the worker's 10-minute tick)."
           }
         },
         {
@@ -402,17 +394,8 @@
           ]
         },
         {
-          "name": "Conversion event once re-posted -> tracker 200 duplicate:true",
+          "name": "Conversion event once (after process-conversions) re-posted -> tracker 200 duplicate:true",
           "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "exec": [
-                  "// the worker posts asynchronously; give it a few seconds",
-                  "setTimeout(() => {}, 6000);"
-                ]
-              }
-            },
             {
               "listen": "test",
               "script": {
@@ -427,7 +410,8 @@
           ],
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/leads/{{lead_id}}/conversion-event"
+            "url": "{{base_url}}/leads/{{lead_id}}/conversion-event",
+            "description": "Run `docker compose exec api npm run process-conversions` first (or wait for the worker's 10-minute tick)."
           }
         }
       ]

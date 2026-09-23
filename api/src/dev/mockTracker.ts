@@ -11,10 +11,23 @@ import express from "express";
 const PORT = Number(process.env.MOCK_TRACKER_PORT ?? 4000);
 const MOCK_API_KEY = process.env.MOCK_TRACKER_API_KEY ?? "dev-mock-key";
 
+// How POST /conversions misbehaves, to exercise each failure path:
+//   normal       - documented behavior (201, then 200 duplicate:true)
+//   server_error - always 500
+//   rate_limited - always 429
+//   garbled_ok   - 200 with an HTML body instead of the documented JSON
+//   hang         - never responds (the caller's timeout must fire)
+//   slow_first   - the first request for each event_id is held for
+//                  MOCK_TRACKER_SLOW_MS before answering; later ones answer
+//                  at once (for racing a stale claim against its reclaim)
+const BEHAVIOR = process.env.MOCK_TRACKER_BEHAVIOR ?? "normal";
+const SLOW_MS = Number(process.env.MOCK_TRACKER_SLOW_MS ?? 8_000);
+
 const app = express();
 app.use(express.json());
 
 const seenEventIds = new Set<string>();
+const requestedEventIds = new Set<string>();
 
 function checkAuth(req: express.Request, res: express.Response): boolean {
   const header = req.header("authorization") ?? "";
@@ -35,7 +48,7 @@ app.get("/api/candidate-tracker/ping", (req, res) => {
   res.status(200).json({ ok: true, candidate: "local-mock", time: new Date().toISOString() });
 });
 
-app.post("/api/candidate-tracker/conversions", (req, res) => {
+app.post("/api/candidate-tracker/conversions", async (req, res) => {
   if (!checkAuth(req, res)) return;
 
   const body = req.body ?? {};
@@ -53,16 +66,25 @@ app.post("/api/candidate-tracker/conversions", (req, res) => {
     return res.status(422).json({ ok: false, error: "validation_error", errors });
   }
 
-  // Toggle-able forced failure, independent of the request body's own
-  // `simulate` field. Lets us exercise the *app's* retry code path (via a
-  // real /leads/:id/status convert call) rather than only the raw tracker
-  // endpoint.
-  if (process.env.MOCK_TRACKER_FORCE_500 === "true" || body.simulate === "server_error") {
+  if (BEHAVIOR === "server_error" || body.simulate === "server_error") {
     return res.status(500).json({
       ok: false,
       error: "server_error",
       message: "Simulated 500. Retry this event_id.",
     });
+  }
+  if (BEHAVIOR === "rate_limited") {
+    return res.status(429).json({ ok: false, error: "rate_limited", message: "Too many requests." });
+  }
+  if (BEHAVIOR === "garbled_ok") {
+    return res.status(200).type("html").send("<html><body>OK</body></html>");
+  }
+  if (BEHAVIOR === "hang") {
+    return; // never respond
+  }
+  if (BEHAVIOR === "slow_first" && !requestedEventIds.has(body.event_id)) {
+    requestedEventIds.add(body.event_id);
+    await new Promise((resolve) => setTimeout(resolve, SLOW_MS));
   }
 
   const isDuplicate = seenEventIds.has(body.event_id);
@@ -77,6 +99,6 @@ app.post("/api/candidate-tracker/conversions", (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`mock tracker listening on http://localhost:${PORT}`);
+  console.log(`mock tracker listening on http://localhost:${PORT} (behavior: ${BEHAVIOR})`);
   console.log(`mock API key: ${MOCK_API_KEY}`);
 });

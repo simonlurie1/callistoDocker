@@ -59,7 +59,15 @@ export interface ConversionEventRepository {
   claimForPosting(id: number, criteria: PostingCriteria): Promise<ConversionEvent | null>;
   /**
    * Stores an attempt's outcome, releases the claim (clears
-   * processingStartedAt) and increments `attempts` atomically.
+   * processingStartedAt) and increments `attempts` atomically — but ONLY if
+   * `processingStartedAt` on the row still equals `claimedAt` (the value the
+   * claim returned). `claimedAt` acts as a fencing token: if a worker's claim
+   * went stale mid-post and another worker reclaimed the event in the
+   * meantime, `processingStartedAt` has since changed and this write is
+   * skipped, returning null, rather than clobbering the new owner's claim or
+   * overwriting the result it's about to record. The post to the tracker
+   * still happened either way (harmlessly duplicated at worst, since
+   * event_id is idempotent) — only the bookkeeping for the loser is dropped.
    */
-  recordAttempt(id: number, attempt: AttemptRecord): Promise<ConversionEvent>;
+  recordAttempt(id: number, claimedAt: Date, attempt: AttemptRecord): Promise<ConversionEvent | null>;
 }

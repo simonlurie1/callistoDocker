@@ -33,6 +33,8 @@ services:
       PORT: 3000
       TRACKER_BASE_URL: ${TRACKER_BASE_URL}
       TRACKER_API_KEY: ${TRACKER_API_KEY}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
     ports:
       - "${API_PORT:-3000}:3000"
 
@@ -51,9 +53,16 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       TRACKER_BASE_URL: ${TRACKER_BASE_URL}
       TRACKER_API_KEY: ${TRACKER_API_KEY}
-      WORKER_POLL_INTERVAL_MS: ${WORKER_POLL_INTERVAL_MS:-2000}
+      WORKER_CRON_SCHEDULE: ${WORKER_CRON_SCHEDULE:-*/10 * * * *}
       WORKER_BATCH_SIZE: ${WORKER_BATCH_SIZE:-10}
       WORKER_STALE_AFTER_MS: ${WORKER_STALE_AFTER_MS:-300000}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+    # Give an in-flight post (rate-limit wait + tracker timeout, ~12s worst
+    # case) room to finish on SIGTERM instead of being SIGKILLed mid-post —
+    # that's still safe (the stale-claim reclaim recovers it next pass), but
+    # letting it finish cleanly avoids the wait entirely in the common case.
+    stop_grace_period: 20s
 
   web:
     build: ./web
@@ -63,9 +72,9 @@ services:
     ports:
       - "${WEB_PORT:-8080}:80"
 
-  # Optional, dev-only stand-in for the real tracker, for exercising the
-  # 5xx -> retry path without spending the real rate limit. Not started by a
-  # plain `docker compose up`; see README "Testing retries with the mock".
+  # Optional, dev-only stand-in for the real tracker, for exercising each
+  # failure path without spending the real rate limit. Not started by a
+  # plain `docker compose up`; see README "Testing failures with the mock".
   mock-tracker:
     build: ./api
     profiles: ["mock"]
@@ -73,7 +82,9 @@ services:
     environment:
       MOCK_TRACKER_PORT: 4000
       MOCK_TRACKER_API_KEY: dev-mock-key
-      MOCK_TRACKER_FORCE_500: ${MOCK_TRACKER_FORCE_500:-false}
+      # normal | server_error | rate_limited | garbled_ok | hang | slow_first
+      MOCK_TRACKER_BEHAVIOR: ${MOCK_TRACKER_BEHAVIOR:-normal}
+      MOCK_TRACKER_SLOW_MS: ${MOCK_TRACKER_SLOW_MS:-8000}
     ports:
       - "4000:4000"
 

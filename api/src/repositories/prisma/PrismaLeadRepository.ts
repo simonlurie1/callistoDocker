@@ -21,6 +21,13 @@ export class PrismaLeadRepository implements LeadRepository {
     return row ? toLead(row) : null;
   }
 
+  async findConvertedWithoutEvent(): Promise<Lead[]> {
+    const rows = await this.prisma.lead.findMany({
+      where: { status: "converted", conversionEvents: { none: {} } },
+    });
+    return rows.map(toLead);
+  }
+
   async create(fields: LeadFields): Promise<Lead> {
     return toLead(await this.prisma.lead.create({ data: { ...fields, status: "new" } }));
   }
